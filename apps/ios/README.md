@@ -1,17 +1,20 @@
 # TODO_AI — iOS / iPadOS
 
-SwiftUI app. Source lives in `TODO_AI/`. The `.xcodeproj` is created in Xcode
-(only user-specific bits are gitignored, so committing the project is fine).
+SwiftUI app. Open `TODO_AI/TODO_AI.xcodeproj` (created with Xcode 27 beta —
+project format 110 requires it; build via CLI with
+`DEVELOPER_DIR=/Applications/Xcode-beta.app/Contents/Developer xcodebuild …`).
+The project uses synchronized folders: files added on disk appear in the target
+automatically.
 
-## First-time setup
+## Structure (`TODO_AI/TODO_AI/`)
 
-1. Xcode → File > New > Project > App (SwiftUI, iOS), name it `TODO_AI`, save here (`apps/ios/`).
-2. Remove Xcode's default `ContentView.swift` and generated App file.
-3. Drag the existing `TODO_AI/` source folder into the project (add as group references).
+- `TODO_AIApp.swift` — app entry: onboarding gate + tab shell
+- `Features/` — Chat · History (+ day timeline) · Settings (+ sub-screens) · Onboarding · MainTabView
+- `Core/` — DesignSystem (Linear midnight tokens), API client, Keychain,
+  GoogleAuth (ASWebAuthenticationSession), Notifications, Time helpers
+- `Resources/Fonts/` — Inter + JetBrains Mono (OFL), registered at runtime
 
-## Structure
+## Backend
 
-- `TODO_AIApp.swift` — app entry: onboarding gate + tab bar
-- `Features/` — Chat · History · Settings · Onboarding
-- `Core/` — networking, models (added as needed)
-- `Resources/` — assets
+Simulator talks to `http://127.0.0.1:8000`; physical devices go through the
+ngrok tunnel (see `Core/API.swift`). Start the backend per `apps/api/README.md`.
