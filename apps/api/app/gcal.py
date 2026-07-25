@@ -68,7 +68,8 @@ def list_events(user, day: date, tz: str) -> list[dict]:
         if not s or not e:
             continue  # all-day events don't block hours
         out.append({"id": ev["id"], "title": ev.get("summary", "(untitled)"),
-                    "start": s, "end": e, "recurring_id": ev.get("recurringEventId")})
+                    "start": s, "end": e, "recurring_id": ev.get("recurringEventId"),
+                    "attendees": len(ev.get("attendees", []))})
     return out
 
 
@@ -96,6 +97,16 @@ def insert_event(user, title: str, start_iso: str, end_iso: str, tz: str,
     resp = httpx.post(EVENTS, headers=_headers(user), json=body)
     resp.raise_for_status()
     return resp.json()["id"]
+
+
+def get_event(user, event_id: str) -> dict | None:
+    """The event as Google sees it now — None if deleted/cancelled."""
+    resp = httpx.get(f"{EVENTS}/{event_id}", headers=_headers(user))
+    if resp.status_code in (404, 410):
+        return None
+    resp.raise_for_status()
+    ev = resp.json()
+    return None if ev.get("status") == "cancelled" else ev
 
 
 def patch_event(user, event_id: str, start_iso: str, end_iso: str, tz: str) -> None:

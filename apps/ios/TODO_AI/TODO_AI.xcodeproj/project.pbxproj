@@ -6,14 +6,63 @@
 	objectVersion = 110;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		AB5E877E30151CBF00A90BF8 /* WidgetKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = AB5E877D30151CBF00A90BF8 /* WidgetKit.framework */; };
+		AB5E878030151CBF00A90BF8 /* SwiftUI.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = AB5E877F30151CBF00A90BF8 /* SwiftUI.framework */; };
+		AB5E878F30151CC100A90BF8 /* TODOWidgetsExtension.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = AB5E877B30151CBF00A90BF8 /* TODOWidgetsExtension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		AB5E878D30151CC100A90BF8 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = AB5E86C73014979600A90BF8 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = AB5E877A30151CBF00A90BF8;
+			remoteInfo = TODOWidgetsExtension;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		AB5E879430151CC100A90BF8 /* Embed Foundation Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			dstPath = "";
+			dstSubfolder = PlugIns;
+			files = (
+				AB5E878F30151CC100A90BF8 /* TODOWidgetsExtension.appex in Embed Foundation Extensions */,
+			);
+			name = "Embed Foundation Extensions";
+		};
+/* End PBXCopyFilesBuildPhase section */
+
 /* Begin PBXFileReference section */
 		AB5E86CF3014979600A90BF8 /* TODO_AI.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = TODO_AI.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		AB5E877B30151CBF00A90BF8 /* TODOWidgetsExtension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = TODOWidgetsExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		AB5E877D30151CBF00A90BF8 /* WidgetKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = WidgetKit.framework; path = System/Library/Frameworks/WidgetKit.framework; sourceTree = SDKROOT; };
+		AB5E877F30151CBF00A90BF8 /* SwiftUI.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = SwiftUI.framework; path = System/Library/Frameworks/SwiftUI.framework; sourceTree = SDKROOT; };
 /* End PBXFileReference section */
+
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		AB5E879030151CC100A90BF8 /* Exceptions for "TODOWidgets" folder in "TODOWidgetsExtension" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = AB5E877A30151CBF00A90BF8 /* TODOWidgetsExtension */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		AB5E86D13014979600A90BF8 /* TODO_AI */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			path = TODO_AI;
+			sourceTree = "<group>";
+		};
+		AB5E878130151CBF00A90BF8 /* TODOWidgets */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				AB5E879030151CC100A90BF8 /* Exceptions for "TODOWidgets" folder in "TODOWidgetsExtension" target */,
+			);
+			path = TODOWidgets;
 			sourceTree = "<group>";
 		};
 /* End PBXFileSystemSynchronizedRootGroup section */
@@ -24,6 +73,13 @@
 			files = (
 			);
 		};
+		AB5E877830151CBF00A90BF8 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			files = (
+				AB5E878030151CBF00A90BF8 /* SwiftUI.framework in Frameworks */,
+				AB5E877E30151CBF00A90BF8 /* WidgetKit.framework in Frameworks */,
+			);
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -31,6 +87,8 @@
 			isa = PBXGroup;
 			children = (
 				AB5E86D13014979600A90BF8 /* TODO_AI */,
+				AB5E878130151CBF00A90BF8 /* TODOWidgets */,
+				AB5E877C30151CBF00A90BF8 /* Frameworks */,
 				AB5E86D03014979600A90BF8 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -39,8 +97,18 @@
 			isa = PBXGroup;
 			children = (
 				AB5E86CF3014979600A90BF8 /* TODO_AI.app */,
+				AB5E877B30151CBF00A90BF8 /* TODOWidgetsExtension.appex */,
 			);
 			name = Products;
+			sourceTree = "<group>";
+		};
+		AB5E877C30151CBF00A90BF8 /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+				AB5E877D30151CBF00A90BF8 /* WidgetKit.framework */,
+				AB5E877F30151CBF00A90BF8 /* SwiftUI.framework */,
+			);
+			name = Frameworks;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -53,8 +121,12 @@
 				AB5E86CB3014979600A90BF8 /* Sources */,
 				AB5E86CC3014979600A90BF8 /* Frameworks */,
 				AB5E86CD3014979600A90BF8 /* Resources */,
+				AB5E879430151CC100A90BF8 /* Embed Foundation Extensions */,
 			);
 			buildRules = (
+			);
+			dependencies = (
+				AB5E878E30151CC100A90BF8 /* PBXTargetDependency */,
 			);
 			fileSystemSynchronizedGroups = (
 				AB5E86D13014979600A90BF8 /* TODO_AI */,
@@ -63,6 +135,24 @@
 			productName = TODO_AI;
 			productReference = AB5E86CF3014979600A90BF8 /* TODO_AI.app */;
 			productType = "com.apple.product-type.application";
+		};
+		AB5E877A30151CBF00A90BF8 /* TODOWidgetsExtension */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = AB5E879130151CC100A90BF8 /* Build configuration list for PBXNativeTarget "TODOWidgetsExtension" */;
+			buildPhases = (
+				AB5E877730151CBF00A90BF8 /* Sources */,
+				AB5E877830151CBF00A90BF8 /* Frameworks */,
+				AB5E877930151CBF00A90BF8 /* Resources */,
+			);
+			buildRules = (
+			);
+			fileSystemSynchronizedGroups = (
+				AB5E878130151CBF00A90BF8 /* TODOWidgets */,
+			);
+			name = TODOWidgetsExtension;
+			productName = TODOWidgetsExtension;
+			productReference = AB5E877B30151CBF00A90BF8 /* TODOWidgetsExtension.appex */;
+			productType = "com.apple.product-type.app-extension";
 		};
 /* End PBXNativeTarget section */
 
@@ -75,6 +165,9 @@
 				LastUpgradeCheck = 2700;
 				TargetAttributes = {
 					AB5E86CE3014979600A90BF8 = {
+						CreatedOnToolsVersion = 27.0;
+					};
+					AB5E877A30151CBF00A90BF8 = {
 						CreatedOnToolsVersion = 27.0;
 					};
 				};
@@ -94,12 +187,18 @@
 			projectRoot = "";
 			targets = (
 				AB5E86CE3014979600A90BF8 /* TODO_AI */,
+				AB5E877A30151CBF00A90BF8 /* TODOWidgetsExtension */,
 			);
 		};
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
 		AB5E86CD3014979600A90BF8 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			files = (
+			);
+		};
+		AB5E877930151CBF00A90BF8 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			files = (
 			);
@@ -112,7 +211,20 @@
 			files = (
 			);
 		};
+		AB5E877730151CBF00A90BF8 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			files = (
+			);
+		};
 /* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		AB5E878E30151CC100A90BF8 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = AB5E877A30151CBF00A90BF8 /* TODOWidgetsExtension */;
+			targetProxy = AB5E878D30151CC100A90BF8 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
 		AB5E86D83014979700A90BF8 /* Debug configuration for PBXProject "TODO_AI" */ = {
@@ -239,11 +351,15 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = TODO_AI.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = 29B9ZF2K3B;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = Info.plist;
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Your voice is transcribed on this device so you can talk your day instead of typing.";
+				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "Speech is converted to text on-device. Nothing is sent until you tap send.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -271,11 +387,15 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = TODO_AI.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = 29B9ZF2K3B;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = Info.plist;
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Your voice is transcribed on this device so you can talk your day instead of typing.";
+				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "Speech is converted to text on-device. Nothing is sent until you tap send.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -291,6 +411,68 @@
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		AB5E879230151CC100A90BF8 /* Debug configuration for PBXNativeTarget "TODOWidgetsExtension" */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				ASSETCATALOG_COMPILER_WIDGET_BACKGROUND_COLOR_NAME = WidgetBackground;
+				CODE_SIGN_ENTITLEMENTS = TODOWidgetsExtension.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 29B9ZF2K3B;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = TODOWidgets/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = TODOWidgets;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "com.bravim.TODO-AI.TODOWidgets";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		AB5E879330151CC100A90BF8 /* Release configuration for PBXNativeTarget "TODOWidgetsExtension" */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				ASSETCATALOG_COMPILER_WIDGET_BACKGROUND_COLOR_NAME = WidgetBackground;
+				CODE_SIGN_ENTITLEMENTS = TODOWidgetsExtension.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 29B9ZF2K3B;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = TODOWidgets/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = TODOWidgets;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "com.bravim.TODO-AI.TODOWidgets";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 5.0;
@@ -314,6 +496,14 @@
 			buildConfigurations = (
 				AB5E86DB3014979700A90BF8 /* Debug configuration for PBXNativeTarget "TODO_AI" */,
 				AB5E86DC3014979700A90BF8 /* Release configuration for PBXNativeTarget "TODO_AI" */,
+			);
+			defaultConfigurationName = Release;
+		};
+		AB5E879130151CC100A90BF8 /* Build configuration list for PBXNativeTarget "TODOWidgetsExtension" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				AB5E879230151CC100A90BF8 /* Debug configuration for PBXNativeTarget "TODOWidgetsExtension" */,
+				AB5E879330151CC100A90BF8 /* Release configuration for PBXNativeTarget "TODOWidgetsExtension" */,
 			);
 			defaultConfigurationName = Release;
 		};

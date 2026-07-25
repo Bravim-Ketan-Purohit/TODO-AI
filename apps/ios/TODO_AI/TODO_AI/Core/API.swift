@@ -87,6 +87,87 @@ struct Recap: Decodable {
     let open: [RecapOpenTask]
 }
 
+struct RolloverTask: Decodable, Identifiable, Hashable {
+    let id: Int
+    let title: String
+    let category: String
+    let durationMinutes: Int
+    let missedTime: String
+    let fitsToday: String?
+}
+
+struct Rollover: Decodable {
+    let yesterday: String
+    let done: Int
+    let total: Int
+    let open: [RolloverTask]
+}
+
+struct WeekCategory: Decodable, Hashable {
+    let category: String
+    let done: Int
+    let total: Int
+    let pct: Int
+}
+
+struct WeekInsight: Decodable {
+    let category: String
+    let suggestedWindow: String
+    let text: String
+    let options: [String]
+}
+
+struct WeekReview: Decodable {
+    let done: Int
+    let total: Int
+    let categories: [WeekCategory]
+    let avgSlipMin: Int?
+    let insight: WeekInsight?
+}
+
+struct PrepOffer: Decodable {
+    let meetingTitle: String
+    let meetingStart: String
+    let attendees: Int
+    let start: String
+    let minutes: Int
+}
+
+struct PrepResponse: Decodable {
+    let prep: PrepOffer?
+}
+
+struct DisruptionMove: Decodable, Hashable {
+    let taskId: Int
+    let title: String
+    let category: String
+    let oldStart: String
+    let oldEnd: String
+    let newStart: String
+    let newEnd: String
+    let cause: String
+}
+
+struct Disruption: Decodable {
+    let cause: String
+    let moves: [DisruptionMove]
+    let unplaced: [String]
+}
+
+struct DeletedTask: Decodable, Identifiable, Hashable {
+    let taskId: Int
+    let title: String
+    let category: String
+    let start: String
+    var id: Int { taskId }
+}
+
+struct DisruptionResponse: Decodable {
+    let disruption: Disruption?
+    let deleted: [DeletedTask]?
+    let followed: [EditInfo]?  // gcal-side moves the backend already synced
+}
+
 struct TaskItem: Decodable, Identifiable, Hashable {
     let id: Int
     let title: String
@@ -146,6 +227,7 @@ struct Profile: Codable {
     var breaks: String?
     var deadlineBuffer: String?
     var customCategories: [String]?
+    var categoryWindows: [String: String]?
 }
 
 struct AnchorsSummary: Decodable {
@@ -250,8 +332,56 @@ enum API {
         try await request("/recap?tz=\(tz)")
     }
 
+    static func rollover() async throws -> Rollover {
+        try await request("/rollover?tz=\(tz)")
+    }
+
+    static func applyRollover(carry: [Int], drop: [Int]) async throws {
+        struct Result: Decodable { let dropped: Int }
+        let _: Result = try await request("/rollover?tz=\(tz)", method: "POST",
+                                          body: ["carry": carry, "drop": drop])
+    }
+
+    static func weekReview() async throws -> WeekReview {
+        try await request("/week-review?tz=\(tz)")
+    }
+
+    static func prep() async throws -> PrepResponse {
+        try await request("/prep?tz=\(tz)")
+    }
+
+    static func addPrep(_ offer: PrepOffer) async throws {
+        struct OK: Decodable { let ok: Bool }
+        let _: OK = try await request("/prep?tz=\(tz)", method: "POST",
+                                      body: ["meeting_title": offer.meetingTitle,
+                                             "start": offer.start,
+                                             "minutes": offer.minutes])
+    }
+
+    static func disruptions() async throws -> DisruptionResponse {
+        try await request("/disruptions?tz=\(tz)")
+    }
+
+    static func resolveDeleted(ids: [Int], action: String) async throws {
+        struct OK: Decodable { let ok: Bool }
+        let _: OK = try await request("/disruptions/deleted?tz=\(tz)", method: "POST",
+                                      body: ["task_ids": ids, "action": action])
+    }
+
+    static func applyReflow(_ moves: [DisruptionMove]) async throws {
+        struct Result: Decodable { let moved: Int }
+        let _: Result = try await request("/disruptions?tz=\(tz)", method: "POST",
+                                          body: ["moves": moves.map {
+                                              ["task_id": $0.taskId,
+                                               "new_start": $0.newStart,
+                                               "new_end": $0.newEnd] as [String: Any]
+                                          }])
+    }
+
     static func today() async throws -> DayPayload {
-        try await request("/today?tz=\(tz)")
+        let payload: DayPayload = try await request("/today?tz=\(tz)")
+        WidgetBridge.save(payload)
+        return payload
     }
 
     static func day(_ date: String) async throws -> DayPayload {

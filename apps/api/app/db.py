@@ -55,6 +55,11 @@ def _connect() -> sqlite3.Connection:
 def init_db() -> None:
     with closing(_connect()) as conn, conn:
         conn.executescript(SCHEMA)
+        # migration: completion timestamps for the weekly review / slip stats
+        try:
+            conn.execute("ALTER TABLE tasks ADD COLUMN completed_at TEXT")
+        except sqlite3.OperationalError:
+            pass  # column already exists
 
 
 def query(sql: str, args: tuple = ()) -> list[sqlite3.Row]:

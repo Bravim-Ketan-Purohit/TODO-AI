@@ -114,9 +114,17 @@ def chat(body: ChatIn, user=Depends(current_user)) -> ChatReply:
     # A new topic starts a fresh thread: pending tasks only follow the
     # conversation while their clarifying questions are still open. Without
     # this, unapproved tasks from abandoned threads re-merge into every
-    # later request (the zombie-graveyard bug).
-    llm_state = state if state.get("questions") else {}
-    result = llm.call(profile.model_dump(), fixed, scheduled, llm_state,
+    # later request (the zombie-graveyard bug). An UNAPPROVED proposal stays
+    # live context though — "make it Sunday 10am" must adjust it, not vanish.
+    llm_state = state if (state.get("questions") or state.get("proposal")
+                          or state.get("recurring")) else {}
+    # upcoming synced tasks (next 7 days) — so cross-day edits can name their target
+    upcoming = [{"title": r["title"], "date": r["date"], "start": r["start_ts"][11:16]}
+                for r in db.query(
+                    "SELECT title, date, start_ts FROM tasks WHERE user_id=? AND date>?"
+                    " AND date<=? AND is_anchor=0 AND status != 'missed' ORDER BY date, start_ts",
+                    (user["id"], today.isoformat(), (today + timedelta(days=7)).isoformat()))]
+    result = llm.call(profile.model_dump(), fixed, scheduled, upcoming, llm_state,
                       body.message, now.isoformat(), body.tz)
 
     if result.intent == "edit" and result.edits:
@@ -130,7 +138,8 @@ def chat(body: ChatIn, user=Depends(current_user)) -> ChatReply:
         result,
         [r["title"].strip().lower() for r in existing]
         + [ev["title"].strip().lower() for ev in fixed]
-        + [r["title"].strip().lower() for r in anchor_rows])
+        + [r["title"].strip().lower() for r in anchor_rows]
+        + [u["title"].strip().lower() for u in upcoming])
     if dropped:
         note = f"(Already on your calendar, skipped: {', '.join(dropped)}.)"
         result.reply = f"{result.reply} {note}".strip() if result.reply else note
@@ -146,44 +155,64 @@ def chat(body: ChatIn, user=Depends(current_user)) -> ChatReply:
     if result.tasks:
         recurring = [t for t in result.tasks if t.recurrence]
         flexible = [t for t in result.tasks if not t.recurrence]
-        day_start = datetime(today.year, today.month, today.day, tzinfo=z)
-        busy = [(datetime.fromisoformat(ev["start"]), datetime.fromisoformat(ev["end"])) for ev in fixed]
-        busy += [(gcal.combine(today, a["start"], z), gcal.combine(today, a["end"], z))
-                 for a in db.anchors_for_date(user["id"], today)]
-        busy += [(datetime.fromisoformat(r["start_ts"]), datetime.fromisoformat(r["end_ts"]))
-                 for r in existing]
-        try:
-            placed = scheduler.schedule(flexible, busy, profile, day_start)
-        except scheduler.Conflict as c:
-            slots = scheduler.suggest_slots(c.duration_minutes, busy, profile, day_start)
-            conflict_q = Question(
-                task_title=c.title,
-                question=f"Pick another time for {c.title} ({c.duration_minutes} min):",
-                suggestions=slots)
-            # the open question must be saved, or the user's answer arrives
-            # into an empty thread and loses all context
-            _save_state(user["id"], {"date": today.isoformat(),
-                                     "tasks": [t.model_dump() for t in result.tasks],
-                                     "questions": [conflict_q.model_dump()]})
-            return ChatReply(
-                type="clarify",
-                text=f"{c.title} can't start at {c.hhmm} — that collides with something already scheduled.",
-                questions=[conflict_q])
-        except ValueError:
-            # overflow (design 3c): quantify the squeeze, offer concrete fixes
-            free_min = scheduler.free_minutes(busy, profile, day_start)
-            need_min = sum(t.duration_minutes or 30 for t in flexible)
-            task_dicts = [t.model_dump() for t in flexible]
-            options = llm.fix_options(profile.model_dump(), task_dicts, free_min, need_min, body.tz)
-            _save_state(user["id"], {"date": today.isoformat(), "tasks": task_dicts, "questions": []})
-            return ChatReply(
-                type="overflow",
-                text=(f"That doesn't fit — {need_min / 60:.2g} hrs of new tasks, "
-                      f"{free_min / 60:.2g} hrs free around your meetings. Pick a fix:"),
-                options=options)
+        # multi-day (5c): group by each task's target date; None → today
+        by_day: dict[date, list] = {}
+        for t in flexible:
+            d = date.fromisoformat(t.date) if t.date else today
+            by_day.setdefault(max(d, today), []).append(t)
 
-        plan = placed + [PlanItem(title=ev["title"], start=ev["start"], end=ev["end"], fixed=True)
-                         for ev in fixed]
+        placed, shown_fixed = [], []
+        for d in sorted(by_day):
+            day_fixed = fixed if d == today else gcal.external_events(user, d, body.tz)
+            day_rows = existing if d == today else db.query(
+                "SELECT title, start_ts, end_ts FROM tasks WHERE user_id=? AND date=?"
+                " AND is_anchor=0 AND status != 'missed'", (user["id"], d.isoformat()))
+            busy = [(datetime.fromisoformat(ev["start"]), datetime.fromisoformat(ev["end"]))
+                    for ev in day_fixed]
+            busy += [(gcal.combine(d, a["start"], z), gcal.combine(d, a["end"], z))
+                     for a in db.anchors_for_date(user["id"], d)]
+            busy += [(datetime.fromisoformat(r["start_ts"]), datetime.fromisoformat(r["end_ts"]))
+                     for r in day_rows]
+            day_start = datetime(d.year, d.month, d.day, tzinfo=z)
+            try:
+                placed += scheduler.schedule(by_day[d], busy, profile, day_start)
+            except scheduler.Conflict as c:
+                slots = scheduler.suggest_slots(c.duration_minutes, busy, profile, day_start)
+                conflict_q = Question(
+                    task_title=c.title,
+                    question=f"Pick another time for {c.title} ({c.duration_minutes} min):",
+                    suggestions=slots)
+                # the open question must be saved, or the user's answer arrives
+                # into an empty thread and loses all context
+                _save_state(user["id"], {"date": today.isoformat(),
+                                         "tasks": [t.model_dump() for t in result.tasks],
+                                         "questions": [conflict_q.model_dump()]})
+                day_note = "" if d == today else f" on {d.strftime('%a %b %d')}"
+                return ChatReply(
+                    type="clarify",
+                    text=f"{c.title} can't start at {c.hhmm}{day_note} — "
+                         "that collides with something already scheduled.",
+                    questions=[conflict_q])
+            except ValueError:
+                # overflow (design 3c): quantify the squeeze, offer concrete fixes
+                free_min = scheduler.free_minutes(busy, profile, day_start)
+                need_min = sum(t.duration_minutes or 30 for t in by_day[d])
+                task_dicts = [t.model_dump() for t in flexible]
+                options = llm.fix_options(profile.model_dump(), task_dicts, free_min, need_min, body.tz)
+                _save_state(user["id"], {"date": today.isoformat(), "tasks": task_dicts, "questions": []})
+                day_note = "Today" if d == today else d.strftime("%a %b %d")
+                return ChatReply(
+                    type="overflow",
+                    text=(f"{day_note} doesn't fit — {need_min / 60:.2g} hrs of new tasks, "
+                          f"{free_min / 60:.2g} hrs free around your meetings. Pick a fix:"),
+                    options=options)
+            shown_fixed += [PlanItem(title=ev["title"], start=ev["start"], end=ev["end"], fixed=True)
+                            for ev in day_fixed]
+        if not by_day:  # recurring-only proposal still shows today's context
+            shown_fixed = [PlanItem(title=ev["title"], start=ev["start"], end=ev["end"], fixed=True)
+                           for ev in fixed]
+
+        plan = placed + shown_fixed
         for t in recurring:
             plan.append(PlanItem(title=t.title, category=t.category, location=t.location,
                                  start=gcal.combine(today, t.recurrence.start_time, z).isoformat(),
@@ -220,7 +249,8 @@ def _approve(user, state: dict, tz: str, z, today: date) -> ChatReply:
         db.execute(
             "INSERT INTO tasks (user_id, date, title, category, start_ts, end_ts, status, google_event_id, location)"
             " VALUES (?,?,?,?,?,?,'planned',?,?)",
-            (user["id"], plan_date, p["title"], p.get("category") or "admin",
+            # each item's own day, not the proposal's day — multi-day plans (5c)
+            (user["id"], p["start"][:10], p["title"], p.get("category") or "admin",
              p["start"], p["end"], event_id, p.get("location")))
         count += 1
 
@@ -241,7 +271,9 @@ def _apply_edits(user, result, today: date, z, tz: str) -> ChatReply:
     """Moves apply instantly (design 3a); deletes ask first (design 3b)."""
     cards, misses = [], []
     for edit in result.edits:
-        rows = db.query("SELECT * FROM tasks WHERE user_id=? AND date=? AND is_anchor=0",
+        # today AND upcoming days — week plans (5c) are editable too
+        rows = db.query("SELECT * FROM tasks WHERE user_id=? AND date>=? AND is_anchor=0"
+                        " ORDER BY date, start_ts",
                         (user["id"], today.isoformat()))
         needle = edit.match_title.lower()
         match = next((r for r in rows
@@ -265,10 +297,16 @@ def _apply_edits(user, result, today: date, z, tz: str) -> ChatReply:
         old_end = datetime.fromisoformat(match["end_ts"])
         duration = (timedelta(minutes=edit.new_duration_minutes)
                     if edit.new_duration_minutes else old_end - old_start)
-        target_day = today + timedelta(days=1) if edit.move_to_tomorrow else today
+        base_day = date.fromisoformat(match["date"])
+        if edit.move_to_date:
+            target_day = date.fromisoformat(edit.move_to_date)
+        elif edit.move_to_tomorrow:
+            target_day = base_day + timedelta(days=1)
+        else:
+            target_day = base_day
         if edit.new_start:
             start = gcal.combine(target_day, edit.new_start, z)
-        elif edit.move_to_tomorrow:
+        elif target_day != base_day:
             start = gcal.combine(target_day, old_start.strftime("%H:%M"), z)
         else:
             start = old_start

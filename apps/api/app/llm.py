@@ -28,8 +28,9 @@ fully-specified ones AND ones still awaiting answers alike. A task is NOT droppe
 just because it needs no clarification; it stays in "tasks" until it appears in \
 already_scheduled_today.
 - The ONLY items to leave out of "tasks" are ones already present in \
-already_scheduled_today or fixed_events_today — never repeat those (duplicates \
-create conflicts). Everything else the user asked for MUST be in "tasks".
+already_scheduled_today, scheduled_upcoming_days, or fixed_events_today — never \
+repeat those (duplicates create conflicts). Everything else the user asked for \
+MUST be in "tasks".
 - NEVER invent a start time or a duration. Any task missing either goes into \
 "questions" with AT MOST 2 short suggestions drawn from the profile (the app adds \
 its own time picker as a third option). A task is only complete when it has \
@@ -47,16 +48,29 @@ not social. If a task truly fits none of these, use ONE new lowercase snake_case
 category of your own (e.g. "gaming") — the app will offer to save it.
 - Time suggestions in "questions" must NOT collide with fixed_events_today or \
 already_scheduled_today — check before suggesting.
+- Multi-day plans ("spread 6 hours of prep across the week", "exam Friday"): split \
+into separate blocks, one per day, each with "date" (YYYY-MM-DD computed from "now"). \
+Weight blocks heavier closer to a deadline. Tasks without "date" mean today. A stated \
+deadline event ("exam Friday at 2pm") is its own task on that date; if its time is \
+unknown, ask.
 - Recurring schedules ("every Mon/Wed", "this semester") → set "recurrence" \
 (days, start_time, end_time, until). Classes are deep_work.
 - Daily schedule blocks the user wants permanently reserved ("block my sleep \
 00:00-06:00", "add gym to my schedule every day at 7") → a task with recurrence \
 covering all 7 days and no "until".
-- intent "edit": the user wants to change or cancel something already scheduled today \
+- intent "edit": the user wants to change or cancel something already scheduled \
 ("move gym to 9", "cancel the walk") → fill "edits" (match_title, new_start / \
 new_duration_minutes / cancel). "Push X to tomorrow" → move_to_tomorrow true (keep \
-new_start null to reuse the same time).
-- intent "other": greetings or questions → answer briefly in "reply".
+new_start null to reuse the same time). Cross-day moves ("move Tuesday's prep to \
+Wednesday") → move_to_date "YYYY-MM-DD" computed from "now"; the match may be on \
+any upcoming day, not just today.
+- pending_state may hold "proposal": an UNAPPROVED plan, placed but NOT yet on \
+the calendar. If the user's message adjusts it ("Sunday morning 10 AM", "make it \
+30 minutes", "move the call to 6"), return intent "plan" with the corrected FULL \
+task list for those items (set "date"/"start"/"duration_minutes" from the message). \
+They are not in already_scheduled_today, so keep them in "tasks".
+- intent "other": greetings or questions → answer briefly in "reply". NEVER \
+answer with "noted" while a pending proposal exists — apply the change instead.
 - All time fields ("start", "new_start", "start_time", "end_time") are 24-hour \
 "HH:MM" strings like "07:00" or "16:30" — NEVER full ISO dates.
 - "reply" may also carry one short conversational sentence for plan/edit turns.
@@ -68,13 +82,14 @@ Respond with ONLY a JSON object in this exact shape (no markdown fences):
 # hand-written — the auto-generated schema wastes ~1500 prefill tokens per call
 SCHEMA = """{"intent": "plan"|"edit"|"other", "reply": "one short sentence",
  "tasks": [{"title": str, "category": "deep_work"|"health"|"meals"|"admin"|"social",
-   "duration_minutes": int|null, "start": "HH:MM"|null,
+   "duration_minutes": int|null, "start": "HH:MM"|null, "date": "YYYY-MM-DD"|null,
    "window": "morning"|"afternoon"|"evening"|null, "location": str|null,
    "recurrence": {"days": ["MO".."SU"], "start_time": "HH:MM", "end_time": "HH:MM",
      "until": "YYYY-MM-DD"|null}|null}],
  "questions": [{"task_title": str, "question": str, "suggestions": [str]}],
  "edits": [{"match_title": str, "new_start": "HH:MM"|null,
-   "new_duration_minutes": int|null, "move_to_tomorrow": bool, "cancel": bool}]}"""
+   "new_duration_minutes": int|null, "move_to_date": "YYYY-MM-DD"|null,
+   "move_to_tomorrow": bool, "cancel": bool}]}"""
 
 
 def _clean(text: str) -> str:
@@ -85,8 +100,8 @@ def _clean(text: str) -> str:
     return text.strip()
 
 
-def call(profile: dict, fixed_events: list, scheduled_today: list, state: dict,
-         message: str, now_iso: str, tz: str) -> LLMResult:
+def call(profile: dict, fixed_events: list, scheduled_today: list, upcoming: list,
+         state: dict, message: str, now_iso: str, tz: str) -> LLMResult:
     key = os.environ.get("OPENROUTER_API_KEY")
     if not key:
         raise HTTPException(500, "OPENROUTER_API_KEY is not configured")
@@ -95,6 +110,7 @@ def call(profile: dict, fixed_events: list, scheduled_today: list, state: dict,
         "now": now_iso, "timezone": tz, "profile": profile,
         "fixed_events_today": fixed_events,
         "already_scheduled_today": scheduled_today,
+        "scheduled_upcoming_days": upcoming,
         "pending_state": state,
     })
     system = SYSTEM.replace("{schema}", SCHEMA)

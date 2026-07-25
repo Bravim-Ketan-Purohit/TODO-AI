@@ -45,6 +45,7 @@ class ParsedTask(BaseModel):
     category: Category = "admin"
     duration_minutes: int | None = None
     start: HHMM | None = None  # only when the user stated/implied an exact time
+    date: str | None = None  # "YYYY-MM-DD" for multi-day plans (5c); None → today
     window: Literal["morning", "afternoon", "evening"] | None = None  # user-implied part of day
     location: str | None = None
     recurrence: Recurrence | None = None
@@ -60,6 +61,7 @@ class Edit(BaseModel):
     match_title: str
     new_start: HHMM | None = None
     new_duration_minutes: int | None = None
+    move_to_date: str | None = None  # "YYYY-MM-DD" — cross-day moves (week plans, 5c)
     move_to_tomorrow: bool = False
     cancel: bool = False
 
@@ -135,7 +137,15 @@ class Profile(BaseModel, extra="allow"):
     lunch: str = "12:30"
     workout: str | None = None  # morning | afternoon | evening
     custom_categories: list[str] = []  # user-added categories beyond the defaults
+    category_windows: dict[str, str] = {}  # per-category window overrides (learning loop)
 
 
 class StatusIn(BaseModel):
     status: Literal["planned", "completed", "missed", "rescheduled"]
+
+
+class RolloverIn(BaseModel):
+    """Morning triage answer (design 5a): which of yesterday's open tasks to
+    carry into today's free slots, and which to let go."""
+    carry: list[int] = []
+    drop: list[int] = []

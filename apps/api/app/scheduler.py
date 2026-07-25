@@ -32,6 +32,11 @@ def _preferred(task: ParsedTask, profile: Profile, day: datetime) -> tuple[datet
         lo, hi = WINDOWS[task.window]
         return _at(day, lo), _at(day, hi)
     cat = task.category
+    # learned per-category windows (weekly review "shift it" answers)
+    learned = (getattr(profile, "category_windows", None) or {}).get(cat)
+    if learned in WINDOWS:
+        lo, hi = WINDOWS[learned]
+        return _at(day, lo), _at(day, hi)
     peak = profile.energy_peak if profile.energy_peak in WINDOWS else "morning"
     if cat == "deep_work":
         name = peak

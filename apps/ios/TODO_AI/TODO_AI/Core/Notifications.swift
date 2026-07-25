@@ -13,7 +13,30 @@ enum Nudges {
         schedule(id: "evening-recap", hour: 21, minute: 30,
                  title: "Wrap up the day?",
                  body: "A quick recap tunes where things land next week.")
+        scheduleWeekly()
         return true
+    }
+
+    /// Sunday 20:00 — weekly review (design 5b). Safe to call repeatedly;
+    /// re-adding the same identifier replaces the request.
+    static func ensureWeeklyIfAuthorized() {
+        UNUserNotificationCenter.current().getNotificationSettings { settings in
+            guard settings.authorizationStatus == .authorized else { return }
+            scheduleWeekly()
+        }
+    }
+
+    private static func scheduleWeekly() {
+        let content = UNMutableNotificationContent()
+        content.title = "Your week, in review"
+        content.body = "What landed, what slipped, and one thing worth shifting."
+        content.sound = .default
+        var comps = DateComponents()
+        comps.weekday = 1  // Sunday
+        comps.hour = 20
+        UNUserNotificationCenter.current().add(UNNotificationRequest(
+            identifier: "weekly-review", content: content,
+            trigger: UNCalendarNotificationTrigger(dateMatching: comps, repeats: true)))
     }
 
     private static func schedule(id: String, hour: Int, minute: Int, title: String, body: String) {

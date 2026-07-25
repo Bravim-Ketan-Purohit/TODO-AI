@@ -4,6 +4,7 @@ struct DayTimelineView: View {
     let date: String
     @Environment(\.dismiss) private var dismiss
     @State private var payload: DayPayload?
+    @State private var focusBlock: Block?
 
     private let pph: CGFloat = 44  // points per hour, from frame 1j
 
@@ -57,6 +58,15 @@ struct DayTimelineView: View {
         .background(DS.void)
         .toolbar(.hidden, for: .navigationBar)
         .task { payload = try? await API.day(date) }
+        .fullScreenCover(item: $focusBlock) { block in
+            let next = blocks.first { $0.startMin >= block.endMin }
+            FocusSessionView(title: block.title, category: block.category,
+                             endMin: block.endMin, taskId: block.taskId,
+                             next: next.map {
+                                 "\($0.title.uppercased()) \(String(format: "%d:%02d", $0.startMin / 60, $0.startMin % 60))"
+                             },
+                             onStatus: setStatus)
+        }
     }
 
     private func canvas(now: Date) -> some View {
@@ -183,6 +193,12 @@ struct DayTimelineView: View {
 
         if let taskId = block.taskId {
             Menu {
+                // focus session (5h): only the block happening right now
+                if isToday, block.startMin <= nowMin, nowMin < block.endMin {
+                    Button { focusBlock = block } label: {
+                        Label("Start focus", systemImage: "timer")
+                    }
+                }
                 Button("Completed") { setStatus(taskId, "completed") }
                 Button("Missed") { setStatus(taskId, "missed") }
                 Button("Planned") { setStatus(taskId, "planned") }

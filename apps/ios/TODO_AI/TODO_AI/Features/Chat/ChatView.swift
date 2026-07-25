@@ -19,6 +19,11 @@ struct ChatMessage: Identifiable {
     var confirmDelete = false
     var nudge: Nudge?
     var recap: Recap?
+    var rollover: Rollover?      // morning triage (5a)
+    var weekReview: WeekReview?  // Sunday review (5b)
+    var prep: PrepOffer?         // meeting prep offer (5e)
+    var disruption: Disruption?  // calendar-changed reflow (5d)
+    var deletedTasks: [DeletedTask] = []  // events removed directly in gcal
     var pending = false   // offline-held (3i)
     var undoHint = false  // "put it back" (3a)
     var suggestedCategories: [String] = []
@@ -27,13 +32,19 @@ struct ChatMessage: Identifiable {
 struct ChatView: View {
     @AppStorage("nudgesOff") private var nudgesOff = false
     @AppStorage("lastRecapDate") private var lastRecapDate = ""
+    @AppStorage("lastRolloverDate") private var lastRolloverDate = ""
+    @AppStorage("lastReviewWeek") private var lastReviewWeek = ""
+    @AppStorage("lastPrepMeeting") private var lastPrepMeeting = ""
+    @AppStorage("dismissedDisruption") private var dismissedDisruption = ""
     @State private var messages: [ChatMessage] = []
     @State private var input = ""
     @State private var sending = false
     @State private var offline = false
     @State private var pendingText: String?
     @State private var today: DayPayload?
+    @State private var showVoice = false
     @FocusState private var inputFocused: Bool
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
         VStack(spacing: 0) {
@@ -66,7 +77,18 @@ struct ChatView: View {
             inputBar
         }
         .background(DS.void)
+        .sheet(isPresented: $showVoice) {
+            // transcript lands in the composer — nothing sends until the user taps send
+            VoiceRantView { transcript in
+                input = transcript
+                inputFocused = true
+            }
+        }
         .task { await onAppear() }
+        .onChange(of: scenePhase) { _, phase in
+            // returning from Google Calendar must re-check for disruptions (5d)
+            if phase == .active { Task { await checkDisruptions() } }
+        }
         .task(id: offline) {
             // retry loop (3i): every 10s while offline
             while offline, !Task.isCancelled {
@@ -86,6 +108,11 @@ struct ChatView: View {
             addCategory: { addCategory($0) },
             nudgeAnswer: { answerNudge($0, nudge: $1) },
             recapAnswer: { answerRecap($0, recap: $1) },
+            rolloverAnswer: { answerRollover($0, rollover: $1) },
+            weekAnswer: { answerWeek($0, review: $1) },
+            prepAnswer: { answerPrep($0, prep: $1) },
+            reflowAnswer: { answerReflow($0, disruption: $1) },
+            deletedAnswer: { answerDeleted($0, tasks: $1) },
             retry: { Task { await retryPending() } },
             discard: { pendingText = nil; offline = false }
         )
@@ -94,6 +121,7 @@ struct ChatView: View {
     // ── lifecycle ───────────────────────────────────────────────────
 
     private func onAppear() async {
+        Nudges.ensureWeeklyIfAuthorized()
         // parallel — each is a full tunnel round-trip
         async let todayFetch = API.today()
         async let nudgeFetch = API.nudges()
@@ -101,6 +129,43 @@ struct ChatView: View {
         if !nudgesOff, let nudge = (try? await nudgeFetch)?.nudge {
             messages.append(ChatMessage(role: .ai, text: nudge.text,
                                         label: "TODO_AI · WEEKLY REVIEW", nudge: nudge))
+        }
+        // morning rollover (5a): first open of the day, only if yesterday left loose ends
+        if lastRolloverDate != todayYMD,
+           let roll = try? await API.rollover() {
+            lastRolloverDate = todayYMD
+            if !roll.open.isEmpty {
+                let n = roll.open.count
+                messages.append(ChatMessage(
+                    role: .ai,
+                    text: "Yesterday: \(roll.done) of \(roll.total). "
+                        + "Carry the \(n == 1 ? "open one" : "\(n) open ones") to today?",
+                    label: "TODO_AI · GOOD MORNING", rollover: roll))
+            }
+        }
+        // disruption reflow (5d): the calendar changed under a synced task
+        await checkDisruptions()
+        // meeting prep (5e): offered, never auto-added; once per meeting
+        if let prep = (try? await API.prep())?.prep, prep.meetingStart != lastPrepMeeting {
+            lastPrepMeeting = prep.meetingStart
+            messages.append(ChatMessage(
+                role: .ai,
+                text: "\(prep.meetingTitle) at \(hhmm(prep.meetingStart)) — "
+                    + "want \(prep.minutes) min of prep right before it?",
+                label: "TODO_AI · MEETING PREP", prep: prep))
+        }
+        // weekly review (5b): Sundays, once per week (the 20:00 notification lands here)
+        let weekday = Calendar.current.component(.weekday, from: Date())
+        let wc = Calendar(identifier: .iso8601)
+            .dateComponents([.yearForWeekOfYear, .weekOfYear], from: Date())
+        let weekID = "\(wc.yearForWeekOfYear ?? 0)-W\(wc.weekOfYear ?? 0)"
+        if weekday == 1, lastReviewWeek != weekID,
+           let review = try? await API.weekReview(), review.total > 0 {
+            lastReviewWeek = weekID
+            messages.append(ChatMessage(
+                role: .ai,
+                text: "\(review.done) of \(review.total) landed this week. By category:",
+                label: "TODO_AI · WEEK REVIEW", weekReview: review))
         }
         // evening recap (4e), once per day after 20:00
         let hour = Calendar.current.component(.hour, from: Date())
@@ -213,6 +278,17 @@ struct ChatView: View {
                 .background(Color.white.opacity(0.02))
                 .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.white.opacity(0.12), lineWidth: 1))
                 .clipShape(RoundedRectangle(cornerRadius: 10))
+            Button {
+                showVoice = true
+            } label: {
+                Image(systemName: "mic")
+                    .font(.system(size: 15, weight: .medium))
+                    .foregroundStyle(DS.mist)
+                    .frame(width: 40, height: 40)
+                    .overlay(Circle().stroke(DS.graphite, lineWidth: 1))
+            }
+            .buttonStyle(.plain)
+            .disabled(sending)
             Button {
                 send(input)
             } label: {
@@ -367,6 +443,153 @@ struct ChatView: View {
         }
     }
 
+    private func answerRollover(_ option: String, rollover: Rollover) {
+        for i in messages.indices { messages[i].rollover = nil }
+        let ids = rollover.open.map(\.id)
+        let carry: [Int]
+        if option.hasPrefix("Carry") {
+            carry = ids
+        } else if option.hasPrefix("Just"), let first = ids.first {
+            carry = [first]
+        } else {
+            carry = []
+        }
+        let drop = ids.filter { !carry.contains($0) }
+        Task {
+            sending = true
+            do {
+                try await API.applyRollover(carry: carry, drop: drop)
+                today = try? await API.today()
+                messages.append(ChatMessage(role: .ai, text: carry.isEmpty
+                    ? "Cleared. Fresh slate today."
+                    : "Done — \(carry.count) carried into today's free slots. Synced to your calendar."))
+            } catch {
+                routeError(error)
+            }
+            sending = false
+        }
+    }
+
+    private func answerWeek(_ option: String, review: WeekReview) {
+        for i in messages.indices { messages[i].weekReview = nil }
+        guard option.hasPrefix("Shift"), let insight = review.insight else {
+            messages.append(ChatMessage(role: .ai, text: "Keeping it as is."))
+            return
+        }
+        Task {
+            if let me = try? await API.me(), var profile = me.profile {
+                var windows = profile.categoryWindows ?? [:]
+                windows[insight.category] = insight.suggestedWindow
+                profile.categoryWindows = windows
+                try? await API.saveProfile(profile)
+            }
+            messages.append(ChatMessage(role: .ai,
+                text: "Done — \(insight.category.replacingOccurrences(of: "_", with: " ")) "
+                    + "tasks now default to the \(insight.suggestedWindow)."))
+        }
+    }
+
+    private func disruptionSignature(_ d: Disruption) -> String {
+        d.cause + d.moves.map { "\($0.taskId)" }.joined(separator: ",")
+    }
+
+    private func checkDisruptions() async {
+        guard let resp = try? await API.disruptions() else { return }
+        if let d = resp.disruption,
+           disruptionSignature(d) != dismissedDisruption,
+           !messages.contains(where: { $0.disruption != nil }) {
+            messages.append(ChatMessage(
+                role: .ai,
+                text: "\"\(d.cause)\" landed on your plan — "
+                    + "\(d.moves.count + d.unplaced.count) task(s) now collide. Reflow?",
+                label: "TODO_AI · CALENDAR CHANGED", disruption: d))
+        }
+        if let followed = resp.followed, !followed.isEmpty {
+            // already synced server-side — just show what was followed
+            today = try? await API.today()
+            messages.append(ChatMessage(
+                role: .ai,
+                text: "You moved \(followed.count == 1 ? "an event" : "\(followed.count) events") "
+                    + "in Google Calendar — I followed:",
+                label: "TODO_AI · CALENDAR CHANGED", edits: followed))
+        }
+        if let gone = resp.deleted, !gone.isEmpty,
+           !messages.contains(where: { !$0.deletedTasks.isEmpty }) {
+            let names = gone.map(\.title).joined(separator: ", ")
+            messages.append(ChatMessage(
+                role: .ai,
+                text: "\(names) \(gone.count == 1 ? "was" : "were") deleted from your "
+                    + "Google Calendar. Drop \(gone.count == 1 ? "it" : "them") from the plan too?",
+                label: "TODO_AI · CALENDAR CHANGED", deletedTasks: gone))
+        }
+    }
+
+    private func answerDeleted(_ option: String, tasks gone: [DeletedTask]) {
+        for i in messages.indices { messages[i].deletedTasks = [] }
+        let restore = option.hasPrefix("Put")
+        Task {
+            sending = true
+            do {
+                try await API.resolveDeleted(ids: gone.map(\.taskId),
+                                             action: restore ? "restore" : "remove")
+                today = try? await API.today()
+                messages.append(ChatMessage(role: .ai, text: restore
+                    ? "Restored — back on your calendar at the original times."
+                    : "Dropped from the plan. Calendar and app agree again."))
+            } catch {
+                routeError(error)
+            }
+            sending = false
+        }
+    }
+
+    private func answerPrep(_ option: String, prep: PrepOffer) {
+        for i in messages.indices { messages[i].prep = nil }
+        guard option == "Add prep" else {
+            messages.append(ChatMessage(role: .ai, text: "Skipped — no prep block."))
+            return
+        }
+        Task {
+            sending = true
+            do {
+                try await API.addPrep(prep)
+                today = try? await API.today()
+                messages.append(ChatMessage(role: .ai,
+                    text: "Prep — \(prep.meetingTitle) added at \(hhmm(prep.start)). Synced."))
+            } catch {
+                routeError(error)
+            }
+            sending = false
+        }
+    }
+
+    private func answerReflow(_ option: String, disruption: Disruption) {
+        for i in messages.indices { messages[i].disruption = nil }
+        guard option == "Reflow" else {
+            dismissedDisruption = disruptionSignature(disruption)
+            messages.append(ChatMessage(role: .ai,
+                text: "Left as is — the overlap stays on your calendar."))
+            return
+        }
+        Task {
+            sending = true
+            do {
+                try await API.applyReflow(disruption.moves)
+                today = try? await API.today()
+                let times = disruption.moves.map { "\($0.title) → \(hhmm($0.newStart))" }
+                    .joined(separator: ", ")
+                var text = "Reflowed: \(times)."
+                if !disruption.unplaced.isEmpty {
+                    text += " No room left for: \(disruption.unplaced.joined(separator: ", "))."
+                }
+                messages.append(ChatMessage(role: .ai, text: text))
+            } catch {
+                routeError(error)
+            }
+            sending = false
+        }
+    }
+
     private func handle(_ reply: ChatReply) {
         messages.append(ChatMessage(
             role: .ai, text: reply.text,
@@ -456,6 +679,11 @@ struct MessageActions {
     let addCategory: (String) -> Void
     let nudgeAnswer: (String, Nudge) -> Void
     let recapAnswer: (String, Recap) -> Void
+    let rolloverAnswer: (String, Rollover) -> Void
+    let weekAnswer: (String, WeekReview) -> Void
+    let prepAnswer: (String, PrepOffer) -> Void
+    let reflowAnswer: (String, Disruption) -> Void
+    let deletedAnswer: (String, [DeletedTask]) -> Void
     let retry: () -> Void
     let discard: () -> Void
 }
@@ -533,6 +761,21 @@ private struct MessageView: View {
                 if let recap = msg.recap {
                     RecapCard(recap: recap, answer: actions.recapAnswer)
                 }
+                if let rollover = msg.rollover {
+                    RolloverCard(rollover: rollover, answer: actions.rolloverAnswer)
+                }
+                if let review = msg.weekReview {
+                    WeekReviewCard(review: review, answer: actions.weekAnswer)
+                }
+                if let prep = msg.prep {
+                    PrepCard(prep: prep, answer: actions.prepAnswer)
+                }
+                if let disruption = msg.disruption {
+                    DisruptionCard(disruption: disruption, answer: actions.reflowAnswer)
+                }
+                if !msg.deletedTasks.isEmpty {
+                    DeletedCard(tasks: msg.deletedTasks, answer: actions.deletedAnswer)
+                }
 
                 if !msg.options.isEmpty, msg.nudge == nil {
                     if msg.options.contains(where: { $0.title == "Retry now" }) {
@@ -549,7 +792,8 @@ private struct MessageView: View {
                 if msg.approvable {
                     HStack(spacing: 8) {
                         Button(action: actions.approve) {
-                            Text("Approve & sync")
+                            Text(Set(msg.plan.map { $0.start.prefix(10) }).count > 1
+                                 ? "Approve week" : "Approve & sync")
                                 .font(DS.inter(14, .medium))
                                 .foregroundStyle(Color(hex: 0x08090A))
                                 .frame(maxWidth: .infinity).frame(height: 44)
@@ -979,24 +1223,352 @@ private struct RecapCard: View {
     }
 }
 
+// ── meeting prep (5e) — offered, never auto-added ───────────────────
+
+private struct PrepCard: View {
+    let prep: PrepOffer
+    let answer: (String, PrepOffer) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 10) {
+                eventRow(title: "Prep — \(prep.meetingTitle)", category: "deep_work",
+                         start: prep.start, caption: "\(prep.minutes)M")
+                HStack(spacing: 6) {
+                    Image(systemName: "person.2")
+                        .font(.system(size: 9)).foregroundStyle(DS.ash)
+                    Text("\(prep.meetingTitle.uppercased()) · \(prep.attendees) PEOPLE · \(hhmm(prep.meetingStart))")
+                        .font(DS.mono(8)).kerning(0.7).foregroundStyle(DS.ash)
+                }
+            }
+            .padding(14)
+            .background(DS.carbon)
+            .cornerRadius(12)
+            .overlay(RoundedRectangle(cornerRadius: 12).stroke(DS.graphite, lineWidth: 1))
+
+            HStack(spacing: 8) {
+                pillButton("Add prep", highlighted: true) { answer("Add prep", prep) }
+                pillButton("Skip", highlighted: false) { answer("Skip", prep) }
+            }
+        }
+    }
+}
+
+// ── disruption reflow (5d) — conflict caught before you saw it ──────
+
+private struct DisruptionCard: View {
+    let disruption: Disruption
+    let answer: (String, Disruption) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(spacing: 10) {
+                    Text(hhmm(disruption.moves.first?.oldStart ?? ""))
+                        .font(DS.mono(10)).foregroundStyle(DS.ash)
+                        .frame(width: 36, alignment: .trailing)
+                    HStack(spacing: 7) {
+                        RoundedRectangle(cornerRadius: 2)
+                            .stroke(DS.coral.opacity(0.7), lineWidth: 0.5)
+                            .frame(width: 6, height: 6)
+                        Text(disruption.cause).font(DS.inter(12, .medium)).foregroundStyle(DS.paper)
+                        Spacer()
+                        Text("NEW · FIXED").font(DS.mono(8)).kerning(0.7).foregroundStyle(DS.coral)
+                    }
+                    .padding(.horizontal, 10)
+                    .frame(height: 32)
+                    .background(DS.coral.opacity(0.08))
+                    .overlay(RoundedRectangle(cornerRadius: 5)
+                        .stroke(DS.coral.opacity(0.4), lineWidth: 0.5))
+                    .clipShape(RoundedRectangle(cornerRadius: 5))
+                }
+                ForEach(disruption.moves, id: \.self) { move in
+                    eventRow(title: move.title, category: move.category,
+                             start: move.oldStart, caption: "", struck: true, dimmed: true)
+                    Image(systemName: "arrow.down")
+                        .font(.system(size: 10, weight: .medium)).foregroundStyle(DS.ash)
+                        .padding(.leading, 46)
+                    eventRow(title: move.title, category: move.category,
+                             start: move.newStart, caption: hhmm(move.newEnd))
+                }
+                if !disruption.unplaced.isEmpty {
+                    Text("NO ROOM TODAY: \(disruption.unplaced.joined(separator: ", ").uppercased())")
+                        .font(DS.mono(8)).kerning(0.7).foregroundStyle(DS.coral.opacity(0.8))
+                }
+            }
+            .padding(14)
+            .background(DS.carbon)
+            .cornerRadius(12)
+            .overlay(RoundedRectangle(cornerRadius: 12).stroke(DS.graphite, lineWidth: 1))
+
+            HStack(spacing: 8) {
+                pillButton("Reflow", highlighted: true) { answer("Reflow", disruption) }
+                pillButton("Leave it", highlighted: false) { answer("Leave it", disruption) }
+            }
+            Text("Nothing moves until you say so.")
+                .font(DS.inter(12)).foregroundStyle(DS.ash)
+        }
+    }
+}
+
+// ── deleted-in-gcal reconciliation ──────────────────────────────────
+
+private struct DeletedCard: View {
+    let tasks: [DeletedTask]
+    let answer: (String, [DeletedTask]) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 10) {
+                ForEach(tasks) { task in
+                    eventRow(title: task.title, category: task.category,
+                             start: task.start, caption: "GONE", struck: true, dimmed: true)
+                }
+                Text("DELETED IN GOOGLE CALENDAR · STILL IN YOUR PLAN")
+                    .font(DS.mono(8)).kerning(0.7).foregroundStyle(DS.ash)
+            }
+            .padding(14)
+            .background(DS.carbon)
+            .cornerRadius(12)
+            .overlay(RoundedRectangle(cornerRadius: 12).stroke(DS.graphite, lineWidth: 1))
+
+            HStack(spacing: 8) {
+                pillButton(tasks.count == 1 ? "Drop it" : "Drop them", highlighted: true) {
+                    answer("Drop", tasks)
+                }
+                pillButton(tasks.count == 1 ? "Put it back" : "Put them back", highlighted: false) {
+                    answer("Put back", tasks)
+                }
+            }
+        }
+    }
+}
+
+// ── morning rollover (5a) ───────────────────────────────────────────
+
+private struct RolloverCard: View {
+    let rollover: Rollover
+    let answer: (String, Rollover) -> Void
+
+    private var options: [String] {
+        switch rollover.open.count {
+        case 1: return ["Carry it", "Drop it"]
+        case 2: return ["Carry both", "Just \(shortTitle(rollover.open[0].title))", "Drop them"]
+        default: return ["Carry all", "Drop them"]
+        }
+    }
+
+    private func shortTitle(_ t: String) -> String {
+        t.split(separator: " ").prefix(2).joined(separator: " ").lowercased()
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            VStack(spacing: 0) {
+                ForEach(Array(rollover.open.enumerated()), id: \.offset) { i, task in
+                    HStack(spacing: 10) {
+                        Circle().fill(DS.category(task.category)).frame(width: 6, height: 6)
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(task.title).font(DS.inter(13, .medium)).foregroundStyle(DS.paper)
+                            Text("MISSED YESTERDAY \(task.missedTime)"
+                                 + (task.fitsToday.map { " · FITS TODAY \($0)" } ?? " · NO ROOM TODAY"))
+                                .font(DS.mono(8)).kerning(0.6)
+                                .foregroundStyle(task.fitsToday == nil ? DS.coral.opacity(0.8) : DS.ash)
+                        }
+                        Spacer()
+                    }
+                    .padding(.vertical, 12)
+                    .overlay(alignment: .bottom) {
+                        if i < rollover.open.count - 1 { DS.hairline.frame(height: 0.5) }
+                    }
+                }
+            }
+            .padding(.horizontal, 14)
+            .background(DS.carbon)
+            .cornerRadius(12)
+            .overlay(RoundedRectangle(cornerRadius: 12).stroke(DS.graphite, lineWidth: 1))
+
+            FlowLayout(spacing: 8) {
+                ForEach(Array(options.enumerated()), id: \.offset) { i, opt in
+                    pillButton(opt, highlighted: i == 0) { answer(opt, rollover) }
+                }
+            }
+            Text("Carried tasks land in today's free slots.")
+                .font(DS.inter(12)).foregroundStyle(DS.ash)
+        }
+    }
+}
+
+// ── week review (5b) ────────────────────────────────────────────────
+
+private struct WeekReviewCard: View {
+    let review: WeekReview
+    let answer: (String, WeekReview) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 12) {
+                ForEach(review.categories, id: \.self) { cat in
+                    let color = DS.category(cat.category)
+                    HStack(spacing: 10) {
+                        Circle().fill(color).frame(width: 6, height: 6)
+                        Text(cat.category.replacingOccurrences(of: "_", with: " "))
+                            .font(DS.inter(12)).foregroundStyle(DS.mist)
+                            .frame(width: 84, alignment: .leading)
+                            .lineLimit(1)
+                        GeometryReader { geo in
+                            ZStack(alignment: .leading) {
+                                Capsule().fill(Color.white.opacity(0.05))
+                                Capsule().fill(color.opacity(0.8))
+                                    .frame(width: geo.size.width * CGFloat(cat.pct) / 100)
+                            }
+                        }
+                        .frame(height: 5)
+                        Text("\(cat.pct)%")
+                            .font(DS.mono(10)).foregroundStyle(DS.fog)
+                            .frame(width: 34, alignment: .trailing)
+                    }
+                }
+                if let slip = review.avgSlipMin, slip != 0 {
+                    HStack {
+                        Text("PLANNED VS ACTUAL")
+                        Spacer()
+                        Text("\(slip > 0 ? "+" : "")\(slip) MIN AVG SLIP")
+                    }
+                    .font(DS.mono(9)).kerning(0.8).foregroundStyle(DS.ash)
+                    .padding(.top, 4)
+                }
+            }
+            .padding(14)
+            .background(DS.carbon)
+            .cornerRadius(12)
+            .overlay(RoundedRectangle(cornerRadius: 12).stroke(DS.graphite, lineWidth: 1))
+
+            if let insight = review.insight {
+                Text(insight.text).font(DS.inter(13.5)).foregroundStyle(DS.bone)
+                FlowLayout(spacing: 8) {
+                    ForEach(Array(insight.options.enumerated()), id: \.offset) { i, opt in
+                        pillButton(opt, highlighted: i == 0) { answer(opt, review) }
+                    }
+                }
+            }
+        }
+    }
+}
+
 // ── proposal card (1h/1m) ───────────────────────────────────────────
 
 private struct ProposalCard: View {
     let plan: [PlanItem]
 
+    // multi-day plan (5c): distinct YYYY-MM-DD prefixes in the proposal
+    private var days: [String] {
+        Array(Set(plan.map { String($0.start.prefix(10)) })).sorted()
+    }
+
+    private func plannedMins(_ day: String) -> Int {
+        plan.filter { !$0.fixed && $0.start.hasPrefix(day) }
+            .map { minutesSinceMidnight($0.end) - minutesSinceMidnight($0.start) }
+            .reduce(0, +)
+    }
+
+    private func hoursLabel(_ mins: Int) -> String {
+        mins % 60 == 0 ? "\(mins / 60)H" : String(format: "%.1fH", Double(mins) / 60)
+    }
+
+    private static let dayFmt: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "yyyy-MM-dd"
+        return f
+    }()
+
+    private func dayLabel(_ day: String) -> String {
+        guard let d = Self.dayFmt.date(from: day) else { return day }
+        return d.formatted(.dateTime.weekday(.abbreviated)).uppercased()
+    }
+
+    private func dayColor(_ day: String) -> Color {
+        DS.category(plan.first { !$0.fixed && $0.start.hasPrefix(day) }?.category)
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Text("TODAY · \(headerDate)")
-                Spacer()
-                Text("\(plan.count) EVENTS")
+            if days.count > 1 {
+                weekHeader
+                weekStrip.padding(.vertical, 6)
+                Text("OUTLINED = EXISTING FIXED EVENTS")
+                    .font(DS.mono(8)).kerning(0.7).foregroundStyle(DS.ash)
+                    .padding(.bottom, 4)
+            } else {
+                HStack {
+                    Text("TODAY · \(headerDate)")
+                    Spacer()
+                    Text("\(plan.count) EVENTS")
+                }
+                .font(DS.mono(9)).kerning(0.9).foregroundStyle(DS.ash)
+                .padding(.bottom, 4)
             }
-            .font(DS.mono(9)).kerning(0.9).foregroundStyle(DS.ash)
-            .padding(.bottom, 4)
 
-            ForEach(plan) { item in
-                let color = DS.category(item.category)
-                HStack(spacing: 10) {
+            ForEach(days, id: \.self) { day in
+                if days.count > 1 {
+                    Text(dayLabel(day))
+                        .font(DS.mono(9)).kerning(0.9).foregroundStyle(DS.fog)
+                        .padding(.top, 6)
+                }
+                ForEach(plan.filter { $0.start.hasPrefix(day) }) { item in
+                    row(item)
+                }
+            }
+        }
+        .padding(14)
+        .background(DS.carbon)
+        .cornerRadius(12)
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(DS.graphite, lineWidth: 1))
+    }
+
+    private var weekHeader: some View {
+        let total = days.map(plannedMins).reduce(0, +)
+        let cat = plan.first { !$0.fixed }?.category ?? ""
+        return HStack {
+            Text("THIS WEEK")
+            Spacer()
+            Text("\(cat.replacingOccurrences(of: "_", with: " ").uppercased()) · \(hoursLabel(total)) TOTAL")
+                .foregroundStyle(dayColor(days.first ?? ""))
+        }
+        .font(DS.mono(9)).kerning(0.9).foregroundStyle(DS.ash)
+    }
+
+    private var weekStrip: some View {
+        let maxMins = max(days.map(plannedMins).max() ?? 1, 1)
+        return HStack(alignment: .bottom, spacing: 10) {
+            ForEach(days, id: \.self) { day in
+                let mins = plannedMins(day)
+                let color = dayColor(day)
+                VStack(spacing: 4) {
+                    if plan.contains(where: { $0.fixed && $0.start.hasPrefix(day) }) {
+                        RoundedRectangle(cornerRadius: 3)
+                            .stroke(DS.smoke, lineWidth: 0.5)
+                            .frame(height: 10)
+                    }
+                    if mins > 0 {
+                        RoundedRectangle(cornerRadius: 4)
+                            .fill(color.opacity(0.5))
+                            .overlay(RoundedRectangle(cornerRadius: 4)
+                                .stroke(color.opacity(0.8), lineWidth: 0.5))
+                            .frame(height: 14 + 40 * CGFloat(mins) / CGFloat(maxMins))
+                    }
+                    Text(dayLabel(day)).font(DS.mono(8)).foregroundStyle(Color(hex: 0x62666D))
+                    Text(mins > 0 ? hoursLabel(mins) : "—")
+                        .font(DS.mono(8)).foregroundStyle(DS.ash)
+                }
+                .frame(maxWidth: .infinity)
+            }
+        }
+    }
+
+    private func row(_ item: PlanItem) -> some View {
+        let color = DS.category(item.category)
+        return HStack(spacing: 10) {
                     Text(hhmm(item.start))
                         .font(DS.mono(10)).foregroundStyle(DS.ash)
                         .frame(width: 36, alignment: .trailing)
@@ -1026,13 +1598,7 @@ private struct ProposalCard: View {
                     .overlay(RoundedRectangle(cornerRadius: 5)
                         .stroke(item.fixed ? Color(hex: 0x2C2E33) : color.opacity(0.45), lineWidth: 0.5))
                     .clipShape(RoundedRectangle(cornerRadius: 5))
-                }
-            }
         }
-        .padding(14)
-        .background(DS.carbon)
-        .cornerRadius(12)
-        .overlay(RoundedRectangle(cornerRadius: 12).stroke(DS.graphite, lineWidth: 1))
     }
 }
 
