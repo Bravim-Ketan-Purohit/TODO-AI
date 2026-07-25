@@ -63,7 +63,15 @@ enum DS {
     // ponytail: UserDefaults read per render; fine at this scale
     static func category(_ name: String?) -> Color {
         guard let name else { return smoke }
-        return Color(hex: categoryHex(name))
+        if defaultHex[name] != nil { return Color(hex: categoryHex(name)) }
+        if let data = UserDefaults.standard.data(forKey: "categoryColorOverrides"),
+           let dict = try? JSONDecoder().decode([String: UInt32].self, from: data),
+           let hex = dict[name] {
+            return Color(hex: hex)
+        }
+        // custom categories get a stable hue from their name
+        let sum = name.unicodeScalars.reduce(0) { $0 &+ Int($1.value) }
+        return Color(hex: palette[sum % palette.count])
     }
 
     // Type — Inter (variable) + JetBrains Mono, registered at runtime

@@ -26,7 +26,7 @@ struct SettingsView: View {
                             row("Rhythm", rhythmSummary)
                             divider
                             NavigationLink(value: "anchors") {
-                                row("Anchors", anchorSummary)
+                                row("Schedule", anchorSummary)
                             }
                             .buttonStyle(.plain)
                         }
@@ -83,7 +83,7 @@ struct SettingsView: View {
             .toolbar(.hidden, for: .navigationBar)
             .navigationDestination(for: String.self) { destination in
                 switch destination {
-                case "anchors": AnchorsView(me: me)
+                case "anchors": ScheduleView(me: me)
                 case "colors": CategoryColorsView()
                 default: TermsView()
                 }
@@ -98,8 +98,8 @@ struct SettingsView: View {
     }
 
     private var anchorSummary: String {
-        let classes = me?.anchors?.classes ?? 0
-        return classes > 0 ? "\(classes + 3) fixed" : "3 defaults"
+        let blocks = me?.anchors?.classes ?? 0
+        return blocks > 0 ? "\(blocks) recurring" : "Add blocks"
     }
 
     private var divider: some View { DS.hairline.frame(height: 0.5) }

@@ -40,6 +40,17 @@ struct ChatReply: Decodable {
     let plan: [PlanItem]
     let edits: [EditInfo]
     let options: [FixOption]
+    let suggestedCategories: [String]
+}
+
+struct AnchorRecord: Decodable, Identifiable, Hashable {
+    let id: Int
+    let title: String
+    let category: String
+    let days: [String]
+    let startTime: String?
+    let endTime: String?
+    let until: String?
 }
 
 struct NudgeDay: Decodable, Hashable {
@@ -134,6 +145,7 @@ struct Profile: Codable {
     var studyTime: String?
     var breaks: String?
     var deadlineBuffer: String?
+    var customCategories: [String]?
 }
 
 struct AnchorsSummary: Decodable {
@@ -155,8 +167,16 @@ enum APIError: LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .noSession: "Not signed in"
-        case let .http(code, body): "Server error \(code): \(body)"
+        case .noSession:
+            return "Not signed in"
+        case let .http(code, body):
+            // backend errors carry a human message in {"detail": "..."} — show that
+            if let data = body.data(using: .utf8),
+               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let detail = obj["detail"] as? String {
+                return detail
+            }
+            return "Server error \(code): \(body)"
         }
     }
 }
@@ -213,6 +233,17 @@ enum API {
 
     static func nudges() async throws -> NudgeResponse {
         try await request("/nudges?tz=\(tz)")
+    }
+
+    static func anchors() async throws -> [AnchorRecord] {
+        try await request("/anchors")
+    }
+
+    static func addAnchor(title: String, startTime: String, endTime: String) async throws {
+        struct OK: Decodable { let ok: Bool }
+        let _: OK = try await request("/anchors?tz=\(tz)", method: "POST",
+                                      body: ["title": title, "start_time": startTime,
+                                             "end_time": endTime])
     }
 
     static func recap() async throws -> Recap {

@@ -21,6 +21,7 @@ struct ChatMessage: Identifiable {
     var recap: Recap?
     var pending = false   // offline-held (3i)
     var undoHint = false  // "put it back" (3a)
+    var suggestedCategories: [String] = []
 }
 
 struct ChatView: View {
@@ -82,6 +83,7 @@ struct ChatView: View {
             adjust: { inputFocused = true },
             deleteDecision: { decideDelete($0) },
             replan: { send($0.title) },
+            addCategory: { addCategory($0) },
             nudgeAnswer: { answerNudge($0, nudge: $1) },
             recapAnswer: { answerRecap($0, recap: $1) },
             retry: { Task { await retryPending() } },
@@ -303,6 +305,22 @@ struct ChatView: View {
         }
     }
 
+    private func addCategory(_ name: String) {
+        for i in messages.indices {
+            messages[i].suggestedCategories.removeAll { $0 == name }
+        }
+        Task {
+            if let me = try? await API.me(), var profile = me.profile {
+                var cats = profile.customCategories ?? []
+                if !cats.contains(name) { cats.append(name) }
+                profile.customCategories = cats
+                try? await API.saveProfile(profile)
+            }
+            messages.append(ChatMessage(role: .ai,
+                text: "Added \"\(name.replacingOccurrences(of: "_", with: " "))\" to your categories."))
+        }
+    }
+
     private func answerNudge(_ option: String, nudge: Nudge) {
         for i in messages.indices { messages[i].nudge = nil }
         if option.hasPrefix("Yes") {
@@ -357,7 +375,8 @@ struct ChatView: View {
             edits: reply.edits,
             options: reply.type == "overflow" ? reply.options : [],
             confirmDelete: reply.type == "confirm_delete",
-            undoHint: reply.type == "edited" && reply.edits.contains { !$0.deleted }))
+            undoHint: reply.type == "edited" && reply.edits.contains { !$0.deleted },
+            suggestedCategories: reply.suggestedCategories))
         if ["synced", "edited"].contains(reply.type) {
             Task { today = try? await API.today() }
         }
@@ -384,7 +403,7 @@ private struct ThinkingView: View {
             VStack(alignment: .leading, spacing: 10) {
                 stepRow(done: true, active: false,
                         text: "READ CALENDAR · \(fixedCount) FIXED EVENT\(fixedCount == 1 ? "" : "S")")
-                stepRow(done: false, active: stage >= 1, text: "PLACING TASKS AROUND YOUR ANCHORS…")
+                stepRow(done: false, active: stage >= 1, text: "PLACING TASKS AROUND YOUR SCHEDULE…")
                 stepRow(done: false, active: stage >= 2, text: "CHECKING CONFLICTS")
             }
             HStack(spacing: 4) {
@@ -434,6 +453,7 @@ struct MessageActions {
     let adjust: () -> Void
     let deleteDecision: (String) -> Void
     let replan: (FixOption) -> Void
+    let addCategory: (String) -> Void
     let nudgeAnswer: (String, Nudge) -> Void
     let recapAnswer: (String, Recap) -> Void
     let retry: () -> Void
@@ -492,6 +512,19 @@ private struct MessageView: View {
                 if msg.undoHint {
                     Text("Undo: \"put it back\"")
                         .font(DS.inter(12)).foregroundStyle(DS.ash)
+                }
+
+                if !msg.suggestedCategories.isEmpty {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("New category — save it for next time?")
+                            .font(DS.inter(12.5)).foregroundStyle(DS.fog)
+                        FlowLayout(spacing: 8) {
+                            ForEach(msg.suggestedCategories, id: \.self) { cat in
+                                pillButton("Add \"\(cat.replacingOccurrences(of: "_", with: " "))\"",
+                                           highlighted: true) { actions.addCategory(cat) }
+                            }
+                        }
+                    }
                 }
 
                 if let nudge = msg.nudge {
@@ -559,11 +592,24 @@ func pillButton(_ title: String, highlighted: Bool, action: @escaping () -> Void
 
 /// Batched clarification (user feedback): pick an answer per question, send
 /// once — one API call instead of N. A single question still sends on tap.
+/// Time questions get a native wheel picker as the third option.
 private struct QuestionsBlock: View {
     let questions: [ChatQuestion]
     let send: (String) -> Void
     @State private var picks: [Int: String] = [:]
     @State private var sent = false
+    @State private var pickerFor: PickerTarget?
+
+    private struct PickerTarget: Identifiable {
+        let id: Int
+    }
+
+    private func isTimeQuestion(_ q: ChatQuestion) -> Bool {
+        let lower = q.question.lowercased()
+        if lower.contains("when") || lower.contains("what time") { return true }
+        return q.suggestions.contains { $0.range(of: #"\d{1,2}:\d{2}"#,
+                                                 options: .regularExpression) != nil }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -573,13 +619,16 @@ private struct QuestionsBlock: View {
                         + Text(q.question).foregroundStyle(DS.bone))
                         .font(DS.inter(13.5))
                     FlowLayout(spacing: 8) {
-                        ForEach(q.suggestions, id: \.self) { opt in
-                            selectPill(opt, selected: picks[i] == opt) {
-                                if questions.count == 1 {
-                                    send(opt)
-                                } else {
-                                    picks[i] = picks[i] == opt ? nil : opt
-                                }
+                        ForEach(q.suggestions.prefix(2), id: \.self) { opt in
+                            selectPill(opt, selected: picks[i] == opt) { choose(opt, for: i) }
+                        }
+                        // a custom-picked time shows as its own selected pill
+                        if let custom = picks[i], !q.suggestions.contains(custom) {
+                            selectPill(custom, selected: true) {}
+                        }
+                        if isTimeQuestion(q) {
+                            selectPill("Pick a time…", selected: false) {
+                                pickerFor = PickerTarget(id: i)
                             }
                         }
                     }
@@ -603,6 +652,52 @@ private struct QuestionsBlock: View {
                 .opacity(sent || picks.count < questions.count ? 0.4 : 1)
             }
         }
+        .sheet(item: $pickerFor) { target in
+            TimePickerSheet { hhmm in
+                choose(hhmm, for: target.id)
+                pickerFor = nil
+            }
+        }
+    }
+
+    private func choose(_ value: String, for index: Int) {
+        if questions.count == 1 {
+            send(value)
+        } else {
+            picks[index] = picks[index] == value ? nil : value
+        }
+    }
+}
+
+/// Native iOS wheel picker for "Pick a time…" (user feedback).
+private struct TimePickerSheet: View {
+    let onPick: (String) -> Void
+    @State private var date = Date()
+
+    var body: some View {
+        VStack(spacing: 16) {
+            Text("Pick a time")
+                .font(DS.inter(15, .medium)).foregroundStyle(DS.paper)
+                .padding(.top, 18)
+            DatePicker("", selection: $date, displayedComponents: .hourAndMinute)
+                .datePickerStyle(.wheel)
+                .labelsHidden()
+            Button {
+                let f = DateFormatter()
+                f.dateFormat = "HH:mm"
+                onPick(f.string(from: date))
+            } label: {
+                Text("Use this time")
+                    .font(DS.inter(15, .medium)).foregroundStyle(Color(hex: 0x08090A))
+                    .frame(maxWidth: .infinity).frame(height: 48)
+                    .background(DS.acidLime)
+                    .clipShape(RoundedRectangle(cornerRadius: 6))
+            }
+            .buttonStyle(.plain)
+            .padding(.horizontal, 20).padding(.bottom, 16)
+        }
+        .presentationDetents([.height(340)])
+        .presentationBackground(DS.carbon)
     }
 }
 

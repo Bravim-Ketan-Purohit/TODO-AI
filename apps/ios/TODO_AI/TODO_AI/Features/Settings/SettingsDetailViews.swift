@@ -35,14 +35,16 @@ struct SubScreen<Content: View>: View {
     }
 }
 
-// ── anchors editor (3j) ─────────────────────────────────────────────
+// ── schedule editor (3j; renamed from Anchors per user feedback) ────
 
-struct AnchorsView: View {
+struct ScheduleView: View {
     let me: Me?
+    @State private var blocks: [AnchorRecord] = []
+    @State private var showAdd = false
 
     var body: some View {
-        SubScreen(title: "Anchors") {
-            Text("Fixed points the scheduler never moves. Tasks fill the gaps.")
+        SubScreen(title: "Schedule") {
+            Text("Fixed daily blocks the scheduler never moves. Tasks fill the gaps around them.")
                 .font(DS.inter(12.5)).foregroundStyle(DS.ash)
 
             card {
@@ -52,18 +54,55 @@ struct AnchorsView: View {
                 divider
                 anchorRow("Workout", workoutDetail)
                 divider
-                anchorRow(focusTitle, focusDetail, chevron: false)
+                anchorRow(focusTitle, focusDetail)
             }
 
+            Text("RECURRING BLOCKS")
+                .font(DS.mono(9)).kerning(1.1).foregroundStyle(DS.ash)
+                .padding(.top, 4)
             card {
-                anchorRow("Classes", classesDetail, chevron: (me?.anchors?.classes ?? 0) > 0)
+                if blocks.isEmpty {
+                    HStack {
+                        Text("Nothing yet — add below, or in chat")
+                            .font(DS.inter(13)).foregroundStyle(DS.ash)
+                        Spacer()
+                    }
+                    .frame(minHeight: 52)
+                } else {
+                    ForEach(Array(blocks.enumerated()), id: \.element.id) { i, block in
+                        HStack(spacing: 10) {
+                            Circle().fill(DS.category(block.category)).frame(width: 6, height: 6)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(block.title).font(DS.inter(14)).foregroundStyle(DS.bone)
+                                Text(blockDetail(block))
+                                    .font(DS.mono(9)).kerning(0.5).foregroundStyle(DS.ash)
+                            }
+                            Spacer()
+                        }
+                        .frame(minHeight: 52)
+                        .overlay(alignment: .bottom) {
+                            if i < blocks.count - 1 { divider }
+                        }
+                    }
+                }
             }
+
+            Button {
+                showAdd = true
+            } label: {
+                Text("Add to schedule")
+                    .font(DS.inter(14, .medium)).foregroundStyle(Color(hex: 0x08090A))
+                    .frame(maxWidth: .infinity).frame(height: 44)
+                    .background(DS.acidLime)
+                    .clipShape(RoundedRectangle(cornerRadius: 6))
+            }
+            .buttonStyle(.plain)
 
             HStack(alignment: .top, spacing: 12) {
                 Image(systemName: "bubble.left")
                     .font(.system(size: 14, weight: .light)).foregroundStyle(DS.fog)
                     .padding(.top, 1)
-                Text("Faster in chat: \"move my lunch anchor to 1pm\"")
+                Text("Faster in chat: \"block my sleep 12am–6am every day\"")
                     .font(DS.inter(12)).foregroundStyle(DS.fog)
             }
             .padding(.horizontal, 14).padding(.vertical, 12)
@@ -71,6 +110,19 @@ struct AnchorsView: View {
             .background(Color.white.opacity(0.02))
             .cornerRadius(6)
         }
+        .task { blocks = (try? await API.anchors()) ?? [] }
+        .sheet(isPresented: $showAdd) {
+            AddScheduleSheet {
+                blocks = (try? await API.anchors()) ?? blocks
+            }
+        }
+    }
+
+    private func blockDetail(_ block: AnchorRecord) -> String {
+        let days = block.days.count == 7 ? "DAILY" : block.days.joined(separator: "/")
+        let times = [block.startTime, block.endTime].compactMap { $0 }.joined(separator: "–")
+        let until = block.until.map { " · THROUGH \(displayDate($0).uppercased())" } ?? ""
+        return "\(days) \(times)\(until)"
     }
 
     private var profile: Profile? { me?.profile }
@@ -104,15 +156,6 @@ struct AnchorsView: View {
         return "\(p.energyPeak.uppercased()) PEAK · \(block) MIN BLOCKS"
     }
 
-    private var classesDetail: String {
-        let count = me?.anchors?.classes ?? 0
-        guard count > 0 else { return "NONE YET · ADD IN CHAT" }
-        if let until = me?.anchors?.until {
-            return "\(count) RECURRING · THROUGH \(displayDate(until).uppercased())"
-        }
-        return "\(count) RECURRING"
-    }
-
     private var divider: some View { DS.hairline.frame(height: 0.5) }
 
     private func card(@ViewBuilder content: () -> some View) -> some View {
@@ -123,19 +166,84 @@ struct AnchorsView: View {
             .overlay(RoundedRectangle(cornerRadius: 12).stroke(DS.graphite, lineWidth: 1))
     }
 
-    private func anchorRow(_ title: String, _ detail: String, chevron: Bool = true) -> some View {
+    private func anchorRow(_ title: String, _ detail: String) -> some View {
         HStack(spacing: 10) {
             VStack(alignment: .leading, spacing: 2) {
                 Text(title).font(DS.inter(14)).foregroundStyle(DS.bone)
                 Text(detail).font(DS.mono(9)).kerning(0.5).foregroundStyle(DS.ash)
             }
             Spacer()
-            if chevron {
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 10, weight: .medium)).foregroundStyle(DS.smoke)
-            }
         }
         .frame(minHeight: 52)
+    }
+}
+
+/// Add a recurring daily block from Settings — creates a real recurring
+/// calendar event via POST /anchors.
+private struct AddScheduleSheet: View {
+    let onAdded: () async -> Void
+    @Environment(\.dismiss) private var dismiss
+    @State private var name = ""
+    @State private var start = Calendar.current.date(from: DateComponents(hour: 22)) ?? Date()
+    @State private var end = Calendar.current.date(from: DateComponents(hour: 6)) ?? Date()
+    @State private var busy = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Text("Add to schedule")
+                .font(DS.inter(19, .medium)).foregroundStyle(DS.paper)
+                .padding(.top, 20)
+            Text("Repeats every day. The calendar is blocked for this time permanently.")
+                .font(DS.inter(12.5)).foregroundStyle(DS.ash)
+
+            TextField("Name (e.g. Sleep)", text: $name)
+                .font(DS.inter(14)).foregroundStyle(DS.bone)
+                .padding(.horizontal, 14).padding(.vertical, 12)
+                .background(Color.white.opacity(0.02))
+                .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.white.opacity(0.12), lineWidth: 1))
+                .clipShape(RoundedRectangle(cornerRadius: 6))
+
+            HStack {
+                Text("Starts").font(DS.inter(14)).foregroundStyle(DS.bone)
+                Spacer()
+                DatePicker("", selection: $start, displayedComponents: .hourAndMinute)
+                    .labelsHidden()
+            }
+            HStack {
+                Text("Ends").font(DS.inter(14)).foregroundStyle(DS.bone)
+                Spacer()
+                DatePicker("", selection: $end, displayedComponents: .hourAndMinute)
+                    .labelsHidden()
+            }
+
+            Spacer()
+
+            Button {
+                busy = true
+                let f = DateFormatter()
+                f.dateFormat = "HH:mm"
+                Task {
+                    try? await API.addAnchor(title: name.trimmingCharacters(in: .whitespaces),
+                                             startTime: f.string(from: start),
+                                             endTime: f.string(from: end))
+                    await onAdded()
+                    dismiss()
+                }
+            } label: {
+                Text(busy ? "Adding…" : "Add block")
+                    .font(DS.inter(15, .medium)).foregroundStyle(Color(hex: 0x08090A))
+                    .frame(maxWidth: .infinity).frame(height: 48)
+                    .background(DS.acidLime)
+                    .clipShape(RoundedRectangle(cornerRadius: 6))
+            }
+            .buttonStyle(.plain)
+            .disabled(busy || name.trimmingCharacters(in: .whitespaces).isEmpty)
+            .opacity(busy || name.trimmingCharacters(in: .whitespaces).isEmpty ? 0.5 : 1)
+            .padding(.bottom, 16)
+        }
+        .padding(.horizontal, 20)
+        .presentationDetents([.height(420)])
+        .presentationBackground(DS.carbon)
     }
 }
 
