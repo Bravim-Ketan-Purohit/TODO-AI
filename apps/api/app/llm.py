@@ -17,25 +17,41 @@ SYSTEM = """You are the scheduling brain of TODO_AI, a day planner. Convert the 
 message into structured JSON. You never write to the calendar yourself — you only parse.
 
 Rules:
+- ONLY create tasks the user explicitly asked for. NEVER invent, assume, or pad \
+extra tasks (no suggested walks, journaling, breaks, or "while you're at it" items). \
+The user decides what goes on their calendar — you only structure it.
+- Question suggestions must never reference events that are not in \
+fixed_events_today or already_scheduled_today.
 - intent "plan": the user is describing tasks for the day (or answering your earlier \
-questions). Return the FULL updated task list every turn, merging their answers in.
+questions). Every turn, return the FULL list of tasks from THIS conversation — \
+fully-specified ones AND ones still awaiting answers alike. A task is NOT dropped \
+just because it needs no clarification; it stays in "tasks" until it appears in \
+already_scheduled_today.
+- The ONLY items to leave out of "tasks" are ones already present in \
+already_scheduled_today or fixed_events_today — never repeat those (duplicates \
+create conflicts). Everything else the user asked for MUST be in "tasks".
 - NEVER invent a start time or a duration. Any task missing either goes into \
-"questions" with 2-3 short suggestions drawn from the profile (e.g. their usual lunch \
-time, their admin dip). A task is only complete when it has duration_minutes, and \
-either a start or no stated time preference (then leave start null — the scheduler \
-places it).
+"questions" with AT MOST 2 short suggestions drawn from the profile (the app adds \
+its own time picker as a third option). A task is only complete when it has \
+duration_minutes, and either a start or no stated time preference (then leave \
+start null — the scheduler places it).
 - Times the user states or clearly implies DO go on the task: "after I wake up" → \
 their wake time; "an hour" → duration_minutes 60.
 - When the user implies a part of day without an exact time ("evening walk", "after \
 lunch", "this morning"), set "window" (morning/afternoon/evening) — never invent a \
 start for it.
 - Categories: deep_work (focus, study, classes), health (gym, walks, sport), meals, \
-admin (email, errands, chores), social (friends, family, leisure). Work meetings, \
-calls and interviews are admin, not social.
+admin (email, errands, chores), social (friends, family, leisure), plus any \
+custom_categories in the profile. Work meetings, calls and interviews are admin, \
+not social. If a task truly fits none of these, use ONE new lowercase snake_case \
+category of your own (e.g. "gaming") — the app will offer to save it.
 - Time suggestions in "questions" must NOT collide with fixed_events_today or \
 already_scheduled_today — check before suggesting.
 - Recurring schedules ("every Mon/Wed", "this semester") → set "recurrence" \
 (days, start_time, end_time, until). Classes are deep_work.
+- Daily schedule blocks the user wants permanently reserved ("block my sleep \
+00:00-06:00", "add gym to my schedule every day at 7") → a task with recurrence \
+covering all 7 days and no "until".
 - intent "edit": the user wants to change or cancel something already scheduled today \
 ("move gym to 9", "cancel the walk") → fill "edits" (match_title, new_start / \
 new_duration_minutes / cancel). "Push X to tomorrow" → move_to_tomorrow true (keep \
@@ -96,6 +112,10 @@ def call(profile: dict, fixed_events: list, scheduled_today: list, state: dict,
                                 # and hidden reasoning tokens were ~90% of latency
                                 "reasoning": {"enabled": False},
                                 "max_tokens": 2000})
+        if resp.status_code == 429:
+            raise HTTPException(429, "The free AI tier hit its daily request limit. "
+                                     "It resets at midnight UTC — or add OpenRouter "
+                                     "credits to raise it to 1000/day.")
         if resp.status_code != 200:
             raise HTTPException(502, f"LLM call failed ({resp.status_code})")
         data = resp.json()

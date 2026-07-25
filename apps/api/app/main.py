@@ -6,7 +6,7 @@ from fastapi import Depends, FastAPI, HTTPException
 
 from . import auth, chat, db, gcal
 from .auth import current_user
-from .models import Profile, StatusIn
+from .models import AnchorIn, Profile, StatusIn
 
 db.init_db()
 
@@ -77,6 +77,30 @@ def history(days: int = 30, tz: str = "UTC", user=Depends(current_user)) -> list
         if r["category"] not in d["categories"]:
             d["categories"].append(r["category"])
     return list(out.values())
+
+
+@app.get("/anchors")
+def list_anchors(user=Depends(current_user)) -> list[dict]:
+    """The user's schedule: permanent recurring blocks (settings screen)."""
+    out = []
+    for r in db.query("SELECT * FROM tasks WHERE user_id=? AND is_anchor=1 ORDER BY id",
+                      (user["id"],)):
+        rec = json.loads(r["recurrence_json"] or "{}")
+        out.append({"id": r["id"], "title": r["title"], "category": r["category"],
+                    "days": rec.get("days", []), "start_time": rec.get("start_time"),
+                    "end_time": rec.get("end_time"), "until": rec.get("until")})
+    return out
+
+
+@app.post("/anchors")
+def add_anchor(body: AnchorIn, tz: str = "UTC", user=Depends(current_user)) -> dict:
+    """Add a schedule block: permanently reserves that time on the calendar."""
+    z = gcal.zone(tz)
+    today = datetime.now(z).date()
+    from .models import Recurrence
+    rec = Recurrence(days=body.days, start_time=body.start_time, end_time=body.end_time)
+    chat.create_recurring_anchor(user, body.title, body.category, rec, tz, z, today)
+    return {"ok": True}
 
 
 @app.get("/nudges")

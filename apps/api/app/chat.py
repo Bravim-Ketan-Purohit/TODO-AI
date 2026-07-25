@@ -6,16 +6,36 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from . import db, gcal, llm, scheduler
 from .auth import current_user
-from .models import ChatIn, ChatReply, EditInfo, PlanItem, Profile, Question, Recurrence
+from .models import (DEFAULT_CATEGORIES, ChatIn, ChatReply, EditInfo, PlanItem,
+                     Profile, Question, Recurrence)
 
 router = APIRouter(tags=["chat"])
 
 
 # ── chat_state helpers ──────────────────────────────────────────────
 
-def _load_state(uid: int) -> dict:
+def _load_state(uid: int, today_iso: str | None = None) -> dict:
     rows = db.query("SELECT state_json FROM chat_state WHERE user_id=?", (uid,))
-    return json.loads(rows[0]["state_json"]) if rows else {}
+    state = json.loads(rows[0]["state_json"]) if rows else {}
+    # stale pending state from a previous day resurfaces old tasks — drop it
+    if today_iso and state.get("date") and state["date"] != today_iso:
+        return {}
+    return state
+
+
+def _drop_already_scheduled(result, existing_titles: list[str]) -> list[str]:
+    """Server-side guard: the model sometimes resurfaces already-synced tasks as
+    new ones (they're in its context). A duplicate then collides with its own
+    calendar entry. Drop such tasks and their questions; return what was dropped
+    so the reply can say so instead of silently shrinking."""
+    def is_dup(title: str) -> bool:
+        t = title.strip().lower()
+        return any(t and e and (t in e or e in t) for e in existing_titles)
+
+    dropped = [t.title for t in result.tasks if is_dup(t.title)]
+    result.tasks = [t for t in result.tasks if not is_dup(t.title)]
+    result.questions = [q for q in result.questions if not is_dup(q.task_title)]
+    return dropped
 
 
 def _save_state(uid: int, state: dict) -> None:
@@ -37,6 +57,35 @@ def _first_on_or_after(start: date, days: list[str]) -> date:
     return start
 
 
+def create_recurring_anchor(user, title: str, category: str, rec: Recurrence,
+                            tz: str, z, start_date: date, location: str | None = None) -> None:
+    """Create a permanent schedule block: recurring gcal event + anchor row.
+    Used by chat approve AND the Settings 'add to schedule' endpoint."""
+    first = _first_on_or_after(start_date, rec.days)
+    start_dt = gcal.combine(first, rec.start_time, z)
+    end_dt = gcal.combine(first, rec.end_time, z)
+    if end_dt <= start_dt:  # overnight block (e.g. sleep 23:00–07:00)
+        end_dt += timedelta(days=1)
+    rrule = "RRULE:FREQ=WEEKLY;BYDAY=" + ",".join(rec.days)
+    if rec.until:
+        rrule += ";UNTIL=" + rec.until.replace("-", "") + "T235959Z"
+    event_id = gcal.insert_event(user, title, start_dt.isoformat(), end_dt.isoformat(), tz,
+                                 category=category, location=location, rrule=rrule)
+    db.execute(
+        "INSERT INTO tasks (user_id, date, title, category, start_ts, end_ts, status,"
+        " google_event_id, is_anchor, recurrence_json, location)"
+        " VALUES (?,?,?,?,?,?,'planned',?,1,?,?)",
+        (user["id"], first.isoformat(), title, category,
+         start_dt.isoformat(), end_dt.isoformat(), event_id,
+         rec.model_dump_json(), location))
+
+
+def _unknown_categories(tasks, profile: Profile) -> list[str]:
+    known = set(DEFAULT_CATEGORIES) | {c.strip().lower().replace(" ", "_")
+                                       for c in getattr(profile, "custom_categories", None) or []}
+    return sorted({t.category for t in tasks} - known)
+
+
 # ── the endpoint ────────────────────────────────────────────────────
 
 @router.post("/chat", response_model=ChatReply)
@@ -44,7 +93,7 @@ def chat(body: ChatIn, user=Depends(current_user)) -> ChatReply:
     z = gcal.zone(body.tz)
     now = datetime.now(z)
     today = now.date()
-    state = _load_state(user["id"])
+    state = _load_state(user["id"], today.isoformat())
 
     if body.delete_decision:
         return _resolve_delete(user, state, body.delete_decision)
@@ -62,11 +111,29 @@ def chat(body: ChatIn, user=Depends(current_user)) -> ChatReply:
         (user["id"], today.isoformat()))
     scheduled = [{"title": r["title"], "start": r["start_ts"][11:16], "end": r["end_ts"][11:16]}
                  for r in existing]
-    result = llm.call(profile.model_dump(), fixed, scheduled, state,
+    # A new topic starts a fresh thread: pending tasks only follow the
+    # conversation while their clarifying questions are still open. Without
+    # this, unapproved tasks from abandoned threads re-merge into every
+    # later request (the zombie-graveyard bug).
+    llm_state = state if state.get("questions") else {}
+    result = llm.call(profile.model_dump(), fixed, scheduled, llm_state,
                       body.message, now.isoformat(), body.tz)
 
     if result.intent == "edit" and result.edits:
         return _apply_edits(user, result, today, z, body.tz)
+
+    # recurring anchors count as scheduled too — without them, "block my sleep"
+    # twice creates two daily blocks
+    anchor_rows = db.query("SELECT title FROM tasks WHERE user_id=? AND is_anchor=1",
+                           (user["id"],))
+    dropped = _drop_already_scheduled(
+        result,
+        [r["title"].strip().lower() for r in existing]
+        + [ev["title"].strip().lower() for ev in fixed]
+        + [r["title"].strip().lower() for r in anchor_rows])
+    if dropped:
+        note = f"(Already on your calendar, skipped: {', '.join(dropped)}.)"
+        result.reply = f"{result.reply} {note}".strip() if result.reply else note
 
     if result.questions:  # never place anything while a time is unknown
         _save_state(user["id"], {"date": today.isoformat(),
@@ -89,15 +156,19 @@ def chat(body: ChatIn, user=Depends(current_user)) -> ChatReply:
             placed = scheduler.schedule(flexible, busy, profile, day_start)
         except scheduler.Conflict as c:
             slots = scheduler.suggest_slots(c.duration_minutes, busy, profile, day_start)
+            conflict_q = Question(
+                task_title=c.title,
+                question=f"Pick another time for {c.title} ({c.duration_minutes} min):",
+                suggestions=slots)
+            # the open question must be saved, or the user's answer arrives
+            # into an empty thread and loses all context
             _save_state(user["id"], {"date": today.isoformat(),
                                      "tasks": [t.model_dump() for t in result.tasks],
-                                     "questions": []})
+                                     "questions": [conflict_q.model_dump()]})
             return ChatReply(
                 type="clarify",
                 text=f"{c.title} can't start at {c.hhmm} — that collides with something already scheduled.",
-                questions=[Question(task_title=c.title,
-                                    question=f"Pick another time for {c.title} ({c.duration_minutes} min):",
-                                    suggestions=slots)])
+                questions=[conflict_q])
         except ValueError:
             # overflow (design 3c): quantify the squeeze, offer concrete fixes
             free_min = scheduler.free_minutes(busy, profile, day_start)
@@ -125,6 +196,7 @@ def chat(body: ChatIn, user=Depends(current_user)) -> ChatReply:
                                  "recurring": [t.model_dump() for t in recurring]})
         n = len(placed) + len(recurring)
         return ChatReply(type="proposal", plan=plan,
+                         suggested_categories=_unknown_categories(result.tasks, profile),
                          text=result.reply
                          or f"Placed {n} task(s) around {len(fixed)} fixed event(s) — no overlaps. "
                             "Approve to write them to your calendar.")
@@ -154,21 +226,9 @@ def _approve(user, state: dict, tz: str, z, today: date) -> ChatReply:
 
     for t in recurring:
         rec = Recurrence.model_validate(t["recurrence"])
-        first = _first_on_or_after(date.fromisoformat(plan_date), rec.days)
-        start_dt = gcal.combine(first, rec.start_time, z)
-        end_dt = gcal.combine(first, rec.end_time, z)
-        rrule = "RRULE:FREQ=WEEKLY;BYDAY=" + ",".join(rec.days)
-        if rec.until:
-            rrule += ";UNTIL=" + rec.until.replace("-", "") + "T235959Z"
-        event_id = gcal.insert_event(user, t["title"], start_dt.isoformat(), end_dt.isoformat(), tz,
-                                     category=t.get("category"), location=t.get("location"), rrule=rrule)
-        db.execute(
-            "INSERT INTO tasks (user_id, date, title, category, start_ts, end_ts, status,"
-            " google_event_id, is_anchor, recurrence_json, location)"
-            " VALUES (?,?,?,?,?,?,'planned',?,1,?,?)",
-            (user["id"], first.isoformat(), t["title"], t.get("category") or "deep_work",
-             start_dt.isoformat(), end_dt.isoformat(), event_id,
-             rec.model_dump_json(), t.get("location")))
+        create_recurring_anchor(user, t["title"], t.get("category") or "deep_work",
+                                rec, tz, z, date.fromisoformat(plan_date),
+                                location=t.get("location"))
         count += 1
 
     _clear_state(user["id"])

@@ -3,8 +3,19 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, BeforeValidator
 
-Category = Literal["deep_work", "health", "meals", "admin", "social"]
+DEFAULT_CATEGORIES = ["deep_work", "health", "meals", "admin", "social"]
 Weekday = Literal["MO", "TU", "WE", "TH", "FR", "SA", "SU"]
+ALL_DAYS: list[Weekday] = ["MO", "TU", "WE", "TH", "FR", "SA", "SU"]
+
+
+def _norm_category(v):
+    """Categories are open-ended (users can add their own) — normalize shape."""
+    if not isinstance(v, str) or not v.strip():
+        return "admin"
+    return v.strip().lower().replace(" ", "_")
+
+
+Category = Annotated[str, BeforeValidator(_norm_category)]
 
 
 def _to_hhmm(v):
@@ -104,6 +115,16 @@ class ChatReply(BaseModel):
     plan: list[PlanItem] = []
     edits: list[EditInfo] = []
     options: list[FixOption] = []
+    suggested_categories: list[str] = []  # unknown categories the user can add
+
+
+class AnchorIn(BaseModel):
+    """Settings-screen 'add to schedule' form (design: Schedule, née Anchors)."""
+    title: str
+    category: Category = "admin"
+    start_time: HHMM
+    end_time: HHMM
+    days: list[Weekday] = ALL_DAYS
 
 
 class Profile(BaseModel, extra="allow"):
@@ -113,6 +134,7 @@ class Profile(BaseModel, extra="allow"):
     energy_peak: str = "morning"  # morning | afternoon | evening
     lunch: str = "12:30"
     workout: str | None = None  # morning | afternoon | evening
+    custom_categories: list[str] = []  # user-added categories beyond the defaults
 
 
 class StatusIn(BaseModel):
