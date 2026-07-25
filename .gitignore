@@ -1,0 +1,20 @@
+# macOS
+.DS_Store
+
+# Xcode
+build/
+DerivedData/
+xcuserdata/
+*.xcuserstate
+*.xcodeproj/xcuserdata/
+*.xcworkspace/xcuserdata/
+.swiftpm/
+
+# Python / uv
+__pycache__/
+*.pyc
+.venv/
+.env
+
+# Claude (local-only settings)
+.claude/settings.local.json

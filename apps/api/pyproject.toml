@@ -1,0 +1,12 @@
+[project]
+name = "todo-ai-api"
+version = "0.1.0"
+description = "TODO_AI backend — OpenRouter LLM proxy + Google Calendar broker"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi",
+    "uvicorn[standard]",
+    "httpx",
+    "google-auth",
+    "google-auth-oauthlib",
+]
