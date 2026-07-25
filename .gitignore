@@ -15,6 +15,10 @@ __pycache__/
 *.pyc
 .venv/
 .env
+*.db
 
 # Claude (local-only settings)
 .claude/settings.local.json
+
+# Google OAuth client secrets (downloaded JSON)
+client_secret_*.json
