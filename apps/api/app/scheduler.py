@@ -117,5 +117,6 @@ def schedule(tasks: list[ParsedTask], busy: list[tuple[datetime, datetime]],
                 raise ValueError(f"No room left for '{task.title}' ({task.duration_minutes} min)")
         intervals = sorted(intervals + [(start, start + dur)])
         placed.append(PlanItem(title=task.title, category=task.category, location=task.location,
+                               deadline=task.deadline,
                                start=start.isoformat(), end=(start + dur).isoformat()))
     return placed

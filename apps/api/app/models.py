@@ -46,6 +46,8 @@ class ParsedTask(BaseModel):
     duration_minutes: int | None = None
     start: HHMM | None = None  # only when the user stated/implied an exact time
     date: str | None = None  # "YYYY-MM-DD" for multi-day plans (5c); None → today
+    someday: bool = False  # explicitly undated ("sometime", "no rush") → backlog
+    deadline: str | None = None  # title of the deadline this block works toward
     window: Literal["morning", "afternoon", "evening"] | None = None  # user-implied part of day
     location: str | None = None
     recurrence: Recurrence | None = None
@@ -66,6 +68,14 @@ class Edit(BaseModel):
     cancel: bool = False
 
 
+class DeadlineSpec(BaseModel):
+    """A goal with a due date and a time budget ('6h of prep by Friday')."""
+    title: str
+    due_date: str  # "YYYY-MM-DD"
+    total_minutes: int
+    category: Category = "deep_work"
+
+
 class LLMResult(BaseModel):
     """The only shape the model may reply with."""
     intent: Literal["plan", "edit", "other"]
@@ -73,6 +83,7 @@ class LLMResult(BaseModel):
     tasks: list[ParsedTask] = []
     questions: list[Question] = []
     edits: list[Edit] = []
+    deadlines: list[DeadlineSpec] = []
 
 
 class PlanItem(BaseModel):
@@ -83,6 +94,7 @@ class PlanItem(BaseModel):
     fixed: bool = False
     location: str | None = None
     recurrence: Recurrence | None = None
+    deadline: str | None = None  # deadline title this block counts toward
 
 
 class EditInfo(BaseModel):
@@ -138,6 +150,7 @@ class Profile(BaseModel, extra="allow"):
     workout: str | None = None  # morning | afternoon | evening
     custom_categories: list[str] = []  # user-added categories beyond the defaults
     category_windows: dict[str, str] = {}  # per-category window overrides (learning loop)
+    weekly_budgets: dict[str, float] = {}  # hours per category per week (engine: budgets)
 
 
 class StatusIn(BaseModel):

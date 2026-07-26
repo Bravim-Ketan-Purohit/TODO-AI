@@ -131,6 +131,18 @@ struct DayTimelineView: View {
 
             Spacer()
 
+            if total > 0 {
+                Button {
+                    shareCard()
+                } label: {
+                    Image(systemName: "square.and.arrow.up")
+                        .font(.system(size: 13, weight: .medium)).foregroundStyle(DS.mist)
+                        .frame(width: 34, height: 34)
+                        .overlay(Circle().stroke(DS.graphite, lineWidth: 0.5))
+                }
+                .buttonStyle(.plain)
+            }
+
             ZStack {
                 Circle().stroke(DS.graphite, lineWidth: 2.5)
                 Circle().trim(from: 0, to: total == 0 ? 0 : CGFloat(done) / CGFloat(total))
@@ -141,6 +153,21 @@ struct DayTimelineView: View {
             .frame(width: 26, height: 26)
         }
         .padding(.horizontal, 20).padding(.vertical, 10)
+    }
+
+    /// Day share card: render the summary as an image → system share sheet.
+    private func shareCard() {
+        guard let payload else { return }
+        let renderer = ImageRenderer(content: ShareCardView(
+            dateLabel: isToday ? "TODAY · \(displayDate(date).uppercased())"
+                               : displayDate(date).uppercased(),
+            done: done, total: total, tasks: payload.tasks))
+        renderer.scale = 3
+        guard let image = renderer.uiImage else { return }
+        let sheet = UIActivityViewController(activityItems: [image], applicationActivities: nil)
+        UIApplication.shared.connectedScenes
+            .compactMap { ($0 as? UIWindowScene)?.keyWindow }
+            .first?.rootViewController?.present(sheet, animated: true)
     }
 
     private var nowHHMM: String {
@@ -211,9 +238,65 @@ struct DayTimelineView: View {
     }
 
     private func setStatus(_ taskId: Int, _ status: String) {
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
         Task {
             try? await API.setStatus(taskId: taskId, status: status)
             payload = try? await API.day(date)
         }
+    }
+}
+
+// ── day share card (rendered to an image, never shown in-app) ───────
+
+private struct ShareCardView: View {
+    let dateLabel: String
+    let done: Int
+    let total: Int
+    let tasks: [TaskItem]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack(spacing: 8) {
+                Rectangle()
+                    .fill(DS.acidLime)
+                    .frame(width: 10, height: 10)
+                    .cornerRadius(2)
+                    .rotationEffect(.degrees(45))
+                Text("TODO_AI").font(DS.inter(14, .semibold)).foregroundStyle(DS.paper)
+                Spacer()
+                Text(dateLabel).font(DS.mono(9)).kerning(0.8).foregroundStyle(DS.ash)
+            }
+            Text("\(done) of \(total) landed.")
+                .font(DS.inter(26, .medium)).foregroundStyle(DS.paper)
+            VStack(alignment: .leading, spacing: 9) {
+                ForEach(tasks.prefix(8)) { task in
+                    HStack(spacing: 9) {
+                        Circle().fill(DS.category(task.category)).frame(width: 6, height: 6)
+                        Text(task.title)
+                            .font(DS.inter(13)).foregroundStyle(DS.mist)
+                            .strikethrough(task.status == "missed")
+                            .lineLimit(1)
+                        Spacer()
+                        if task.status == "completed" {
+                            Image(systemName: "checkmark")
+                                .font(.system(size: 9, weight: .bold))
+                                .foregroundStyle(DS.acidLime)
+                        } else {
+                            Text(hhmm(task.startTs)).font(DS.mono(9)).foregroundStyle(DS.ash)
+                        }
+                    }
+                }
+                if tasks.count > 8 {
+                    Text("+ \(tasks.count - 8) more")
+                        .font(DS.mono(9)).foregroundStyle(DS.ash)
+                }
+            }
+            DS.hairline.frame(height: 0.5)
+            Text("PLANNED BY VOICE · SYNCED TO CALENDAR")
+                .font(DS.mono(8)).kerning(0.8).foregroundStyle(DS.ash)
+        }
+        .padding(24)
+        .frame(width: 360)
+        .background(DS.void)
     }
 }

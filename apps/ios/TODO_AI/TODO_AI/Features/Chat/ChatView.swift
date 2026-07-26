@@ -24,6 +24,9 @@ struct ChatMessage: Identifiable {
     var prep: PrepOffer?         // meeting prep offer (5e)
     var disruption: Disruption?  // calendar-changed reflow (5d)
     var deletedTasks: [DeletedTask] = []  // events removed directly in gcal
+    var backlogOffers: [BacklogItem] = []  // backlog drain (morning)
+    var staleItems: [BacklogItem] = []     // parked 10+ days — decide now
+    var deadlineAlert: DeadlineAlert?      // behind on a goal → re-spread offer
     var pending = false   // offline-held (3i)
     var undoHint = false  // "put it back" (3a)
     var suggestedCategories: [String] = []
@@ -43,10 +46,32 @@ struct ChatView: View {
     @State private var pendingText: String?
     @State private var today: DayPayload?
     @State private var showVoice = false
+    @State private var showBacklog = false
     @FocusState private var inputFocused: Bool
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
+        ZStack(alignment: .leading) {
+            chatBody
+            if showBacklog {
+                Color.black.opacity(0.5)
+                    .ignoresSafeArea()
+                    .onTapGesture { showBacklog = false }
+                    .transition(.opacity)
+                BacklogDrawer(isOpen: $showBacklog) { confirmation in
+                    showBacklog = false
+                    messages.append(ChatMessage(role: .ai, text: confirmation))
+                    Task { today = try? await API.today() }
+                }
+                .frame(width: 300)
+                .ignoresSafeArea(edges: .bottom)
+                .transition(.move(edge: .leading))
+            }
+        }
+        .animation(.spring(duration: 0.3), value: showBacklog)
+    }
+
+    private var chatBody: some View {
         VStack(spacing: 0) {
             header
             if offline {
@@ -58,6 +83,7 @@ struct ChatView: View {
                         if messages.isEmpty { greeting }
                         ForEach(messages) { msg in
                             MessageView(msg: msg, actions: actions)
+                                .transition(.move(edge: .bottom).combined(with: .opacity))
                         }
                         if sending {
                             ThinkingView(fixedCount: today?.fixed.count ?? 0)
@@ -67,6 +93,7 @@ struct ChatView: View {
                     .padding(.horizontal, 20)
                     .padding(.top, 8)
                     .frame(maxWidth: .infinity, alignment: .leading)
+                    .animation(.spring(duration: 0.35), value: messages.count)
                 }
                 .scrollDismissesKeyboard(.immediately)
                 .simultaneousGesture(TapGesture().onEnded { inputFocused = false })
@@ -113,6 +140,9 @@ struct ChatView: View {
             prepAnswer: { answerPrep($0, prep: $1) },
             reflowAnswer: { answerReflow($0, disruption: $1) },
             deletedAnswer: { answerDeleted($0, tasks: $1) },
+            backlogAnswer: { answerBacklog($0, offers: $1) },
+            staleAnswer: { answerStale($0, items: $1) },
+            deadlineAnswer: { answerDeadline($0, alert: $1) },
             retry: { Task { await retryPending() } },
             discard: { pendingText = nil; offline = false }
         )
@@ -130,7 +160,7 @@ struct ChatView: View {
             messages.append(ChatMessage(role: .ai, text: nudge.text,
                                         label: "TODO_AI · WEEKLY REVIEW", nudge: nudge))
         }
-        // morning rollover (5a): first open of the day, only if yesterday left loose ends
+        // morning rollover (5a): first open of the day — loose ends + backlog drain
         if lastRolloverDate != todayYMD,
            let roll = try? await API.rollover() {
             lastRolloverDate = todayYMD
@@ -141,6 +171,28 @@ struct ChatView: View {
                     text: "Yesterday: \(roll.done) of \(roll.total). "
                         + "Carry the \(n == 1 ? "open one" : "\(n) open ones") to today?",
                     label: "TODO_AI · GOOD MORNING", rollover: roll))
+            }
+            if let offers = roll.backlog, !offers.isEmpty {
+                messages.append(ChatMessage(
+                    role: .ai,
+                    text: "Today has room — from your backlog:",
+                    label: "TODO_AI · BACKLOG", backlogOffers: offers))
+            }
+            if let stale = roll.stale, !stale.isEmpty {
+                let names = stale.map(\.title).joined(separator: ", ")
+                messages.append(ChatMessage(
+                    role: .ai,
+                    text: "\(names) \(stale.count == 1 ? "has" : "have") been parked a while. "
+                        + "Schedule or let go?",
+                    label: "TODO_AI · BACKLOG", staleItems: stale))
+            }
+            for alert in roll.deadlines ?? [] {
+                let h = Double(alert.behindMinutes) / 60
+                messages.append(ChatMessage(
+                    role: .ai,
+                    text: "You're \(String(format: "%.2g", h))h behind on "
+                        + "\(alert.title) (due \(alert.dueDate)). I found room to recover:",
+                    label: "TODO_AI · DEADLINE", deadlineAlert: alert))
             }
         }
         // disruption reflow (5d): the calendar changed under a synced task
@@ -184,6 +236,16 @@ struct ChatView: View {
 
     private var header: some View {
         HStack(spacing: 8) {
+            Button {
+                inputFocused = false
+                showBacklog = true
+            } label: {
+                Image(systemName: "line.3.horizontal")
+                    .font(.system(size: 14, weight: .medium)).foregroundStyle(DS.mist)
+                    .frame(width: 32, height: 32)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
             Rectangle()
                 .fill(DS.bone)
                 .frame(width: 9, height: 9)
@@ -524,6 +586,74 @@ struct ChatView: View {
         }
     }
 
+    private func answerStale(_ option: String, items: [BacklogItem]) {
+        for i in messages.indices { messages[i].staleItems = [] }
+        Task {
+            sending = true
+            if option.hasPrefix("Let go") {
+                for item in items { try? await API.dropBacklog(id: item.id) }
+                messages.append(ChatMessage(role: .ai,
+                    text: "Let go. If it mattered, it'll come back on its own."))
+            } else {
+                var placed: [String] = []
+                for item in items {
+                    if let r = try? await API.scheduleBacklog(id: item.id) {
+                        placed.append("\(r.title) → \(hhmm(r.start))")
+                    }
+                }
+                today = try? await API.today()
+                messages.append(ChatMessage(role: .ai, text: placed.isEmpty
+                    ? "No room found — still parked. Open ☰ to pick a time yourself."
+                    : "Scheduled: \(placed.joined(separator: ", ")). Synced."))
+            }
+            sending = false
+        }
+    }
+
+    private func answerDeadline(_ option: String, alert: DeadlineAlert) {
+        for i in messages.indices { messages[i].deadlineAlert = nil }
+        guard option == "Re-spread" else {
+            messages.append(ChatMessage(role: .ai,
+                text: "Left alone — I'll check again tomorrow morning."))
+            return
+        }
+        Task {
+            sending = true
+            do {
+                try await API.respread(deadlineId: alert.id, blocks: alert.recovery)
+                today = try? await API.today()
+                messages.append(ChatMessage(role: .ai,
+                    text: "Recovered \(alert.recovery.count) block(s) — synced to your calendar. "
+                        + "\(alert.title) is back on track."))
+            } catch {
+                routeError(error)
+            }
+            sending = false
+        }
+    }
+
+    private func answerBacklog(_ option: String, offers: [BacklogItem]) {
+        for i in messages.indices { messages[i].backlogOffers = [] }
+        guard option != "Keep parked" else {
+            messages.append(ChatMessage(role: .ai, text: "Parked — they'll come up again."))
+            return
+        }
+        Task {
+            sending = true
+            var placed: [String] = []
+            for offer in offers {
+                if let r = try? await API.scheduleBacklog(id: offer.id) {
+                    placed.append("\(r.title) at \(r.start)")
+                }
+            }
+            today = try? await API.today()
+            messages.append(ChatMessage(role: .ai, text: placed.isEmpty
+                ? "No room left after all — they stay parked."
+                : "Scheduled: \(placed.joined(separator: ", ")). Synced."))
+            sending = false
+        }
+    }
+
     private func answerDeleted(_ option: String, tasks gone: [DeletedTask]) {
         for i in messages.indices { messages[i].deletedTasks = [] }
         let restore = option.hasPrefix("Put")
@@ -591,6 +721,9 @@ struct ChatView: View {
     }
 
     private func handle(_ reply: ChatReply) {
+        if ["synced", "edited"].contains(reply.type) {
+            UINotificationFeedbackGenerator().notificationOccurred(.success)
+        }
         messages.append(ChatMessage(
             role: .ai, text: reply.text,
             questions: reply.questions, plan: reply.plan,
@@ -684,6 +817,9 @@ struct MessageActions {
     let prepAnswer: (String, PrepOffer) -> Void
     let reflowAnswer: (String, Disruption) -> Void
     let deletedAnswer: (String, [DeletedTask]) -> Void
+    let backlogAnswer: (String, [BacklogItem]) -> Void
+    let staleAnswer: (String, [BacklogItem]) -> Void
+    let deadlineAnswer: (String, DeadlineAlert) -> Void
     let retry: () -> Void
     let discard: () -> Void
 }
@@ -775,6 +911,15 @@ private struct MessageView: View {
                 }
                 if !msg.deletedTasks.isEmpty {
                     DeletedCard(tasks: msg.deletedTasks, answer: actions.deletedAnswer)
+                }
+                if !msg.backlogOffers.isEmpty {
+                    BacklogCard(offers: msg.backlogOffers, answer: actions.backlogAnswer)
+                }
+                if !msg.staleItems.isEmpty {
+                    StaleCard(items: msg.staleItems, answer: actions.staleAnswer)
+                }
+                if let alert = msg.deadlineAlert {
+                    DeadlineCard(alert: alert, answer: actions.deadlineAnswer)
                 }
 
                 if !msg.options.isEmpty, msg.nudge == nil {
@@ -1311,6 +1456,140 @@ private struct DisruptionCard: View {
     }
 }
 
+// ── living deadline (engine): behind → recovery blocks ──────────────
+
+private struct DeadlineCard: View {
+    let alert: DeadlineAlert
+    let answer: (String, DeadlineAlert) -> Void
+
+    var body: some View {
+        let color = DS.category(alert.category)
+        let covered = alert.doneMinutes + alert.bookedMinutes
+        VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack {
+                    HStack(spacing: 7) {
+                        Circle().fill(color).frame(width: 6, height: 6)
+                        Text(alert.title).font(DS.inter(13, .medium)).foregroundStyle(DS.paper)
+                    }
+                    Spacer()
+                    Text("DUE \(alert.dueDate.suffix(5))")
+                        .font(DS.mono(9)).kerning(0.7).foregroundStyle(DS.ash)
+                }
+                GeometryReader { geo in
+                    ZStack(alignment: .leading) {
+                        Capsule().fill(Color.white.opacity(0.05))
+                        Capsule().fill(color.opacity(0.8))
+                            .frame(width: geo.size.width
+                                   * CGFloat(min(covered, alert.targetMinutes))
+                                   / CGFloat(max(alert.targetMinutes, 1)))
+                    }
+                }
+                .frame(height: 5)
+                Text("\(covered / 60)H OF \(alert.targetMinutes / 60)H COVERED · "
+                     + "\(alert.behindMinutes) MIN BEHIND")
+                    .font(DS.mono(9)).kerning(0.7).foregroundStyle(DS.coral.opacity(0.85))
+                ForEach(alert.recovery, id: \.self) { block in
+                    eventRow(title: block.title, category: alert.category,
+                             start: block.start, caption: "\(block.minutes)M")
+                }
+            }
+            .padding(14)
+            .background(DS.carbon)
+            .cornerRadius(12)
+            .overlay(RoundedRectangle(cornerRadius: 12).stroke(DS.graphite, lineWidth: 1))
+
+            HStack(spacing: 8) {
+                pillButton("Re-spread", highlighted: true) { answer("Re-spread", alert) }
+                pillButton("Leave it", highlighted: false) { answer("Leave it", alert) }
+            }
+        }
+    }
+}
+
+// ── backlog drain (engine) ──────────────────────────────────────────
+
+private struct BacklogCard: View {
+    let offers: [BacklogItem]
+    let answer: (String, [BacklogItem]) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            VStack(spacing: 0) {
+                ForEach(Array(offers.enumerated()), id: \.offset) { i, item in
+                    HStack(spacing: 10) {
+                        Circle().fill(DS.category(item.category)).frame(width: 6, height: 6)
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(item.title).font(DS.inter(13, .medium)).foregroundStyle(DS.paper)
+                            Text("PARKED · \(item.durationMinutes) MIN"
+                                 + (item.fitsAt.map { " · FITS AT \($0)" } ?? ""))
+                                .font(DS.mono(8)).kerning(0.6).foregroundStyle(DS.ash)
+                        }
+                        Spacer()
+                    }
+                    .padding(.vertical, 12)
+                    .overlay(alignment: .bottom) {
+                        if i < offers.count - 1 { DS.hairline.frame(height: 0.5) }
+                    }
+                }
+            }
+            .padding(.horizontal, 14)
+            .background(DS.carbon)
+            .cornerRadius(12)
+            .overlay(RoundedRectangle(cornerRadius: 12).stroke(DS.graphite, lineWidth: 1))
+
+            HStack(spacing: 8) {
+                pillButton(offers.count == 1 ? "Schedule it" : "Schedule them",
+                           highlighted: true) { answer("Schedule", offers) }
+                pillButton("Keep parked", highlighted: false) { answer("Keep parked", offers) }
+            }
+            Text("Parked things only surface when a day has room.")
+                .font(DS.inter(12)).foregroundStyle(DS.ash)
+        }
+    }
+}
+
+// ── stale backlog (anti-rot): decide, don't drift ───────────────────
+
+private struct StaleCard: View {
+    let items: [BacklogItem]
+    let answer: (String, [BacklogItem]) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            VStack(spacing: 0) {
+                ForEach(Array(items.enumerated()), id: \.offset) { i, item in
+                    HStack(spacing: 10) {
+                        Circle().fill(DS.category(item.category)).frame(width: 6, height: 6)
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(item.title).font(DS.inter(13, .medium)).foregroundStyle(DS.paper)
+                            Text("PARKED \(item.daysParked ?? 0) DAYS · \(item.durationMinutes) MIN")
+                                .font(DS.mono(8)).kerning(0.6)
+                                .foregroundStyle(DS.coral.opacity(0.8))
+                        }
+                        Spacer()
+                    }
+                    .padding(.vertical, 12)
+                    .overlay(alignment: .bottom) {
+                        if i < items.count - 1 { DS.hairline.frame(height: 0.5) }
+                    }
+                }
+            }
+            .padding(.horizontal, 14)
+            .background(DS.carbon)
+            .cornerRadius(12)
+            .overlay(RoundedRectangle(cornerRadius: 12).stroke(DS.graphite, lineWidth: 1))
+
+            HStack(spacing: 8) {
+                pillButton("Schedule now", highlighted: true) { answer("Schedule now", items) }
+                pillButton("Let go", highlighted: false) { answer("Let go", items) }
+            }
+            Text("Or open ☰ to pick an exact time.")
+                .font(DS.inter(12)).foregroundStyle(DS.ash)
+        }
+    }
+}
+
 // ── deleted-in-gcal reconciliation ──────────────────────────────────
 
 private struct DeletedCard: View {
@@ -1424,9 +1703,17 @@ private struct WeekReviewCard: View {
                             }
                         }
                         .frame(height: 5)
-                        Text("\(cat.pct)%")
-                            .font(DS.mono(10)).foregroundStyle(DS.fog)
-                            .frame(width: 34, alignment: .trailing)
+                        // budgeted categories score against the target, not just %
+                        if let budget = cat.budgetHours {
+                            Text("\(String(format: "%.2g", cat.doneHours ?? 0))/\(String(format: "%.2g", budget))H")
+                                .font(DS.mono(10))
+                                .foregroundStyle((cat.doneHours ?? 0) >= budget ? DS.fog : DS.coral.opacity(0.85))
+                                .frame(width: 52, alignment: .trailing)
+                        } else {
+                            Text("\(cat.pct)%")
+                                .font(DS.mono(10)).foregroundStyle(DS.fog)
+                                .frame(width: 34, alignment: .trailing)
+                        }
                     }
                 }
                 if let slip = review.avgSlipMin, slip != 0 {

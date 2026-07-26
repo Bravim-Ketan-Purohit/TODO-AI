@@ -190,7 +190,8 @@ def _today_busy(user, day: date, tz: str, z) -> list:
 
 @app.get("/rollover")
 def rollover(tz: str = "UTC", user=Depends(current_user)) -> dict:
-    """Yesterday's open tasks + where each would fit today."""
+    """Yesterday's open tasks + where each would fit today, plus backlog items
+    that fit today's free time (the backlog drain)."""
     z = gcal.zone(tz)
     today = datetime.now(z).date()
     yesterday = (today - timedelta(days=1)).isoformat()
@@ -198,15 +199,12 @@ def rollover(tz: str = "UTC", user=Depends(current_user)) -> dict:
         "SELECT * FROM tasks WHERE user_id=? AND date=? AND is_anchor=0 ORDER BY start_ts",
         (user["id"], yesterday))
     open_rows = [r for r in rows if r["status"] in ("planned", "rescheduled", "missed")]
-    if not open_rows:
-        return {"yesterday": yesterday,
-                "done": sum(r["status"] == "completed" for r in rows),
-                "total": len(rows), "open": []}
 
     from .scheduler import suggest_slots
     profile = Profile.model_validate(json.loads(user["profile_json"] or "{}"))
     day_start = datetime(today.year, today.month, today.day, tzinfo=z)
     busy = _today_busy(user, today, tz, z)
+
     out = []
     for r in open_rows:
         start = datetime.fromisoformat(r["start_ts"])
@@ -216,9 +214,113 @@ def rollover(tz: str = "UTC", user=Depends(current_user)) -> dict:
         out.append({"id": r["id"], "title": r["title"], "category": r["category"],
                     "duration_minutes": dur, "missed_time": r["start_ts"][11:16],
                     "fits_today": slots[0] if slots else None})
+
+    # anti-rot: parked 10+ days → time to decide, not to keep drifting
+    stale = []
+    for b in db.query("SELECT * FROM backlog WHERE user_id=? ORDER BY id", (user["id"],)):
+        age = (today - date.fromisoformat(b["created_at"][:10])).days
+        if age >= 10:
+            stale.append({"id": b["id"], "title": b["title"], "category": b["category"],
+                          "duration_minutes": b["duration_minutes"], "days_parked": age})
+        if len(stale) >= 2:
+            break
+    stale_ids = {s["id"] for s in stale}
+
+    # backlog drain: oldest parked items that genuinely fit today's gaps
+    backlog = []
+    for b in db.query("SELECT * FROM backlog WHERE user_id=? ORDER BY id LIMIT 10",
+                      (user["id"],)):
+        if b["id"] in stale_ids:  # stale items get their own decide-now card
+            continue
+        slots = suggest_slots(b["duration_minutes"], busy, profile, day_start, count=1)
+        if slots:
+            fit = gcal.combine(today, slots[0], z)
+            busy.append((fit, fit + timedelta(minutes=b["duration_minutes"])))
+            backlog.append({"id": b["id"], "title": b["title"], "category": b["category"],
+                            "duration_minutes": b["duration_minutes"], "fits_at": slots[0]})
+        if len(backlog) >= 3:  # a gentle offer, not a flood
+            break
+
     return {"yesterday": yesterday,
             "done": sum(r["status"] == "completed" for r in rows),
-            "total": len(rows), "open": out}
+            "total": len(rows), "open": out, "backlog": backlog, "stale": stale,
+            "deadlines": _deadline_alerts(user, today, tz, z, profile)}
+
+
+def _dur_min(r) -> int:
+    return max(15, int((datetime.fromisoformat(r["end_ts"])
+                        - datetime.fromisoformat(r["start_ts"])).total_seconds() // 60))
+
+
+def _deadline_alerts(user, today: date, tz: str, z, profile: Profile) -> list[dict]:
+    """Living deadlines: hours-remaining vs days-remaining. When behind (blocks
+    missed or dropped), propose concrete recovery blocks before the due date."""
+    from .scheduler import suggest_slots
+    alerts = []
+    for d in db.query("SELECT * FROM deadlines WHERE user_id=? AND due_date>=?",
+                      (user["id"], today.isoformat())):
+        linked = db.query("SELECT * FROM tasks WHERE deadline_id=? AND user_id=?",
+                          (d["id"], user["id"]))
+        done = sum(_dur_min(r) for r in linked if r["status"] == "completed")
+        booked = sum(_dur_min(r) for r in linked
+                     if r["status"] in ("planned", "rescheduled")
+                     and today.isoformat() <= r["date"] <= d["due_date"])
+        behind = d["target_minutes"] - done - booked
+        if behind < 15:
+            continue  # on track — stay quiet
+        block_title = linked[0]["title"] if linked else d["title"]
+        recovery, remaining = [], behind
+        day = today
+        while remaining >= 15 and day.isoformat() <= d["due_date"]:
+            day_start = datetime(day.year, day.month, day.day, tzinfo=z)
+            busy = _today_busy(user, day, tz, z)
+            if day == today:
+                busy.append((day_start, datetime.now(z)))  # nothing in the past
+            chunk = min(90, remaining)
+            slots = suggest_slots(chunk, busy, profile, day_start, count=1)
+            if slots:
+                start = gcal.combine(day, slots[0], z)
+                recovery.append({"start": start.isoformat(), "minutes": chunk,
+                                 "title": block_title})
+                remaining -= chunk
+            else:
+                day += timedelta(days=1)
+                continue
+            day += timedelta(days=1)
+        alerts.append({"id": d["id"], "title": d["title"], "due_date": d["due_date"],
+                       "category": d["category"], "target_minutes": d["target_minutes"],
+                       "done_minutes": done, "booked_minutes": booked,
+                       "behind_minutes": behind, "recovery": recovery,
+                       "recoverable": behind - remaining})
+    return alerts
+
+
+class RespreadIn(BaseModel):
+    blocks: list[dict]  # [{start ISO, minutes, title}]
+
+
+@app.post("/deadlines/{deadline_id}/respread")
+def respread(deadline_id: int, body: RespreadIn, tz: str = "UTC",
+             user=Depends(current_user)) -> dict:
+    rows = db.query("SELECT * FROM deadlines WHERE id=? AND user_id=?",
+                    (deadline_id, user["id"]))
+    if not rows:
+        raise HTTPException(404, "Unknown deadline")
+    d = rows[0]
+    created = 0
+    for b in body.blocks:
+        start = datetime.fromisoformat(b["start"])
+        end = start + timedelta(minutes=int(b["minutes"]))
+        title = b.get("title") or d["title"]
+        event_id = gcal.insert_event(user, title, start.isoformat(), end.isoformat(),
+                                     tz, category=d["category"])
+        db.execute(
+            "INSERT INTO tasks (user_id, date, title, category, start_ts, end_ts, status,"
+            " google_event_id, deadline_id) VALUES (?,?,?,?,?,?,'planned',?,?)",
+            (user["id"], start.date().isoformat(), title, d["category"],
+             start.isoformat(), end.isoformat(), event_id, d["id"]))
+        created += 1
+    return {"created": created}
 
 
 @app.post("/rollover")
@@ -259,6 +361,77 @@ def apply_rollover(body: RolloverIn, tz: str = "UTC", user=Depends(current_user)
         db.execute("UPDATE tasks SET status='missed' WHERE id=? AND user_id=?"
                    " AND status != 'completed'", (task_id, user["id"]))
     return {"carried": carried, "dropped": len(body.drop)}
+
+
+# ── backlog (engine: park now, drain when a day has room) ───────────
+
+@app.get("/backlog")
+def list_backlog(user=Depends(current_user)) -> list[dict]:
+    return [dict(r) for r in db.query(
+        "SELECT id, title, category, duration_minutes, created_at FROM backlog"
+        " WHERE user_id=? ORDER BY id", (user["id"],))]
+
+
+class ScheduleBacklogIn(BaseModel):
+    start: str | None = None  # ISO — user-picked date+time; None → auto
+
+
+@app.post("/backlog/{item_id}/schedule")
+def schedule_backlog(item_id: int, body: ScheduleBacklogIn | None = None,
+                     tz: str = "UTC", user=Depends(current_user)) -> dict:
+    """Sync one parked item: auto → first free slot in the next 7 days;
+    manual → the user's picked time, refused if it collides."""
+    rows = db.query("SELECT * FROM backlog WHERE id=? AND user_id=?", (item_id, user["id"]))
+    if not rows:
+        raise HTTPException(404, "Not in the backlog")
+    b = rows[0]
+    z = gcal.zone(tz)
+    now = datetime.now(z)
+    today = now.date()
+    dur = timedelta(minutes=b["duration_minutes"])
+
+    if body and body.start:
+        start = datetime.fromisoformat(body.start).astimezone(z)
+        if start < now:
+            raise HTTPException(409, "That time is in the past")
+        end = start + dur
+        for s, e in _today_busy(user, start.date(), tz, z):
+            if start < e and s < end:
+                raise HTTPException(409, "That time collides with something "
+                                         "already on your calendar")
+    else:
+        from .scheduler import suggest_slots
+        profile = Profile.model_validate(json.loads(user["profile_json"] or "{}"))
+        start = None
+        for offset in range(7):
+            day = today + timedelta(days=offset)
+            day_start = datetime(day.year, day.month, day.day, tzinfo=z)
+            busy = _today_busy(user, day, tz, z)
+            if day == today:
+                busy.append((day_start, now))  # not in the past
+            slots = suggest_slots(b["duration_minutes"], busy, profile, day_start, count=1)
+            if slots:
+                start = gcal.combine(day, slots[0], z)
+                break
+        if start is None:
+            raise HTTPException(409, "No room in the next 7 days — it stays parked")
+        end = start + dur
+
+    event_id = gcal.insert_event(user, b["title"], start.isoformat(), end.isoformat(),
+                                 tz, category=b["category"])
+    db.execute(
+        "INSERT INTO tasks (user_id, date, title, category, start_ts, end_ts, status,"
+        " google_event_id) VALUES (?,?,?,?,?,?,'planned',?)",
+        (user["id"], start.date().isoformat(), b["title"], b["category"],
+         start.isoformat(), end.isoformat(), event_id))
+    db.execute("DELETE FROM backlog WHERE id=?", (b["id"],))
+    return {"title": b["title"], "start": start.isoformat()}
+
+
+@app.delete("/backlog/{item_id}")
+def drop_backlog(item_id: int, user=Depends(current_user)) -> dict:
+    db.execute("DELETE FROM backlog WHERE id=? AND user_id=?", (item_id, user["id"]))
+    return {"ok": True}
 
 
 # ── meeting prep (design 5e) — offered, never auto-added ────────────
@@ -487,14 +660,24 @@ def week_review(tz: str = "UTC", user=Depends(current_user)) -> dict:
     total = len(rows)
     done = sum(r["status"] == "completed" for r in rows)
 
+    budgets = (Profile.model_validate(json.loads(user["profile_json"] or "{}"))
+               .weekly_budgets or {})
     by_cat: dict[str, dict] = {}
     for r in rows:
-        c = by_cat.setdefault(r["category"], {"category": r["category"], "done": 0, "total": 0})
+        c = by_cat.setdefault(r["category"], {"category": r["category"], "done": 0,
+                                              "total": 0, "done_min": 0})
         c["total"] += 1
-        c["done"] += r["status"] == "completed"
+        if r["status"] == "completed":
+            c["done"] += 1
+            c["done_min"] += _dur_min(r)
+    # budgeted categories with zero activity still belong on the scoreboard
+    for cat, hours in budgets.items():
+        by_cat.setdefault(cat, {"category": cat, "done": 0, "total": 0, "done_min": 0})
     categories = sorted(by_cat.values(), key=lambda c: -c["total"])
     for c in categories:
         c["pct"] = round(100 * c["done"] / c["total"]) if c["total"] else 0
+        c["done_hours"] = round(c.pop("done_min") / 60, 1)
+        c["budget_hours"] = budgets.get(c["category"])
 
     # average slip: planned end vs actual completion, same-day completions only
     slips = []

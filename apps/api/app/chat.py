@@ -32,7 +32,7 @@ def _drop_already_scheduled(result, existing_titles: list[str]) -> list[str]:
         t = title.strip().lower()
         return any(t and e and (t in e or e in t) for e in existing_titles)
 
-    dropped = [t.title for t in result.tasks if is_dup(t.title)]
+    dropped = list(dict.fromkeys(t.title for t in result.tasks if is_dup(t.title)))
     result.tasks = [t for t in result.tasks if not is_dup(t.title)]
     result.questions = [q for q in result.questions if not is_dup(q.task_title)]
     return dropped
@@ -124,22 +124,55 @@ def chat(body: ChatIn, user=Depends(current_user)) -> ChatReply:
                     "SELECT title, date, start_ts FROM tasks WHERE user_id=? AND date>?"
                     " AND date<=? AND is_anchor=0 AND status != 'missed' ORDER BY date, start_ts",
                     (user["id"], today.isoformat(), (today + timedelta(days=7)).isoformat()))]
-    result = llm.call(profile.model_dump(), fixed, scheduled, upcoming, llm_state,
+    # 14-day history aggregates — lets the model answer "how many hours of
+    # deep work this week?" / "when did I last work out?" from real data
+    stats: dict[str, dict] = {}
+    for r in db.query(
+            "SELECT date, category, status, start_ts, end_ts FROM tasks"
+            " WHERE user_id=? AND date>=? AND date<=? AND is_anchor=0",
+            (user["id"], (today - timedelta(days=14)).isoformat(), today.isoformat())):
+        s = stats.setdefault(r["category"], {
+            "category": r["category"], "completed_minutes": 0,
+            "completed_count": 0, "planned_count": 0, "last_completed": None})
+        s["planned_count"] += 1
+        if r["status"] == "completed":
+            mins = int((datetime.fromisoformat(r["end_ts"])
+                        - datetime.fromisoformat(r["start_ts"])).total_seconds() // 60)
+            s["completed_minutes"] += mins
+            s["completed_count"] += 1
+            if not s["last_completed"] or r["date"] > s["last_completed"]:
+                s["last_completed"] = r["date"]
+
+    result = llm.call(profile.model_dump(), fixed, scheduled, upcoming,
+                      list(stats.values()), llm_state,
                       body.message, now.isoformat(), body.tz)
 
     if result.intent == "edit" and result.edits:
         return _apply_edits(user, result, today, z, body.tz)
 
+    # models sometimes multiply one request into identical copies ("Go to a
+    # movie" ×7) — collapse exact repeats (same title, same day) to one
+    seen_keys = set()
+    unique_tasks = []
+    for t in result.tasks:
+        key = (t.title.strip().lower(), t.date)
+        if key not in seen_keys:
+            seen_keys.add(key)
+            unique_tasks.append(t)
+    result.tasks = unique_tasks
+
     # recurring anchors count as scheduled too — without them, "block my sleep"
     # twice creates two daily blocks
     anchor_rows = db.query("SELECT title FROM tasks WHERE user_id=? AND is_anchor=1",
                            (user["id"],))
+    backlog_rows = db.query("SELECT title FROM backlog WHERE user_id=?", (user["id"],))
     dropped = _drop_already_scheduled(
         result,
         [r["title"].strip().lower() for r in existing]
         + [ev["title"].strip().lower() for ev in fixed]
         + [r["title"].strip().lower() for r in anchor_rows]
-        + [u["title"].strip().lower() for u in upcoming])
+        + [u["title"].strip().lower() for u in upcoming]
+        + [r["title"].strip().lower() for r in backlog_rows])
     if dropped:
         note = f"(Already on your calendar, skipped: {', '.join(dropped)}.)"
         result.reply = f"{result.reply} {note}".strip() if result.reply else note
@@ -151,6 +184,23 @@ def chat(body: ChatIn, user=Depends(current_user)) -> ChatReply:
         return ChatReply(type="clarify",
                          text=result.reply or "A couple of times before I place anything:",
                          questions=result.questions)
+
+    # someday tasks park in the backlog — never guessed onto a date. Ones with
+    # open questions (unknown duration) stay in the thread until answered.
+    questioned = {q.task_title.strip().lower() for q in result.questions}
+    parked = [t for t in result.tasks if t.someday and not t.recurrence
+              and t.title.strip().lower() not in questioned]
+    if parked:
+        parked_titles = {t.title for t in parked}
+        result.tasks = [t for t in result.tasks if t.title not in parked_titles]
+        for t in parked:
+            db.execute(
+                "INSERT INTO backlog (user_id, title, category, duration_minutes)"
+                " VALUES (?,?,?,?)",
+                (user["id"], t.title, t.category, t.duration_minutes or 30))
+        note = "Parked in your backlog: " + ", ".join(t.title for t in parked) + \
+               ". I'll offer them when a day has room."
+        result.reply = f"{result.reply} {note}".strip() if result.reply else note
 
     if result.tasks:
         recurring = [t for t in result.tasks if t.recurrence]
@@ -222,7 +272,8 @@ def chat(body: ChatIn, user=Depends(current_user)) -> ChatReply:
 
         _save_state(user["id"], {"date": today.isoformat(),
                                  "proposal": [p.model_dump() for p in placed],
-                                 "recurring": [t.model_dump() for t in recurring]})
+                                 "recurring": [t.model_dump() for t in recurring],
+                                 "deadlines": [d.model_dump() for d in result.deadlines]})
         n = len(placed) + len(recurring)
         return ChatReply(type="proposal", plan=plan,
                          suggested_categories=_unknown_categories(result.tasks, profile),
@@ -242,16 +293,27 @@ def _approve(user, state: dict, tz: str, z, today: date) -> ChatReply:
         raise HTTPException(400, "Nothing pending to approve")
     plan_date = state.get("date") or today.isoformat()
 
+    # living deadlines: create the goal rows first so blocks can link to them
+    deadline_ids: dict[str, int] = {}
+    for d in state.get("deadlines") or []:
+        deadline_ids[d["title"]] = db.execute(
+            "INSERT INTO deadlines (user_id, title, due_date, target_minutes, category)"
+            " VALUES (?,?,?,?,?)",
+            (user["id"], d["title"], d["due_date"], d["total_minutes"],
+             d.get("category") or "deep_work"))
+
     count = 0
     for p in proposal:
         event_id = gcal.insert_event(user, p["title"], p["start"], p["end"], tz,
                                      category=p.get("category"), location=p.get("location"))
         db.execute(
-            "INSERT INTO tasks (user_id, date, title, category, start_ts, end_ts, status, google_event_id, location)"
-            " VALUES (?,?,?,?,?,?,'planned',?,?)",
+            "INSERT INTO tasks (user_id, date, title, category, start_ts, end_ts, status,"
+            " google_event_id, location, deadline_id)"
+            " VALUES (?,?,?,?,?,?,'planned',?,?,?)",
             # each item's own day, not the proposal's day — multi-day plans (5c)
             (user["id"], p["start"][:10], p["title"], p.get("category") or "admin",
-             p["start"], p["end"], event_id, p.get("location")))
+             p["start"], p["end"], event_id, p.get("location"),
+             deadline_ids.get(p.get("deadline"))))
         count += 1
 
     for t in recurring:
@@ -262,7 +324,11 @@ def _approve(user, state: dict, tz: str, z, today: date) -> ChatReply:
         count += 1
 
     _clear_state(user["id"])
-    return ChatReply(type="synced", text=f"Synced {count} event(s) to Google Calendar.")
+    text = f"Synced {count} event(s) to Google Calendar."
+    for d in state.get("deadlines") or []:
+        text += (f" Tracking: {d['title']} — {d['total_minutes'] / 60:.2g}h "
+                 f"by {d['due_date']}. If blocks slip, I'll offer to re-spread.")
+    return ChatReply(type="synced", text=text)
 
 
 # ── chat-driven edits of already-synced events ──────────────────────

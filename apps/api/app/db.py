@@ -42,6 +42,23 @@ CREATE TABLE IF NOT EXISTS chat_state (
   state_json TEXT NOT NULL,
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+CREATE TABLE IF NOT EXISTS backlog (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL REFERENCES users(id),
+  title TEXT NOT NULL,
+  category TEXT NOT NULL,
+  duration_minutes INTEGER NOT NULL DEFAULT 30,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE TABLE IF NOT EXISTS deadlines (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL REFERENCES users(id),
+  title TEXT NOT NULL,
+  due_date TEXT NOT NULL,
+  target_minutes INTEGER NOT NULL,
+  category TEXT NOT NULL DEFAULT 'deep_work',
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
 """
 
 
@@ -55,11 +72,13 @@ def _connect() -> sqlite3.Connection:
 def init_db() -> None:
     with closing(_connect()) as conn, conn:
         conn.executescript(SCHEMA)
-        # migration: completion timestamps for the weekly review / slip stats
-        try:
-            conn.execute("ALTER TABLE tasks ADD COLUMN completed_at TEXT")
-        except sqlite3.OperationalError:
-            pass  # column already exists
+        # migrations (ALTERs are idempotent-by-exception)
+        for ddl in ("ALTER TABLE tasks ADD COLUMN completed_at TEXT",
+                    "ALTER TABLE tasks ADD COLUMN deadline_id INTEGER"):
+            try:
+                conn.execute(ddl)
+            except sqlite3.OperationalError:
+                pass  # column already exists
 
 
 def query(sql: str, args: tuple = ()) -> list[sqlite3.Row]:

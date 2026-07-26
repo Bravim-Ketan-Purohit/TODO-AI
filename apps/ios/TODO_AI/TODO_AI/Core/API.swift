@@ -101,6 +101,38 @@ struct Rollover: Decodable {
     let done: Int
     let total: Int
     let open: [RolloverTask]
+    let backlog: [BacklogItem]?
+    let stale: [BacklogItem]?
+    let deadlines: [DeadlineAlert]?
+}
+
+struct RecoveryBlock: Decodable, Hashable {
+    let start: String
+    let minutes: Int
+    let title: String
+}
+
+struct DeadlineAlert: Decodable, Identifiable, Hashable {
+    let id: Int
+    let title: String
+    let dueDate: String
+    let category: String
+    let targetMinutes: Int
+    let doneMinutes: Int
+    let bookedMinutes: Int
+    let behindMinutes: Int
+    let recovery: [RecoveryBlock]
+    let recoverable: Int
+}
+
+struct BacklogItem: Decodable, Identifiable, Hashable {
+    let id: Int
+    let title: String
+    let category: String
+    let durationMinutes: Int
+    let fitsAt: String?
+    let createdAt: String?
+    let daysParked: Int?
 }
 
 struct WeekCategory: Decodable, Hashable {
@@ -108,6 +140,8 @@ struct WeekCategory: Decodable, Hashable {
     let done: Int
     let total: Int
     let pct: Int
+    let doneHours: Double?
+    let budgetHours: Double?
 }
 
 struct WeekInsight: Decodable {
@@ -228,6 +262,7 @@ struct Profile: Codable {
     var deadlineBuffer: String?
     var customCategories: [String]?
     var categoryWindows: [String: String]?
+    var weeklyBudgets: [String: Double]?
 }
 
 struct AnchorsSummary: Decodable {
@@ -344,6 +379,35 @@ enum API {
 
     static func weekReview() async throws -> WeekReview {
         try await request("/week-review?tz=\(tz)")
+    }
+
+    static func respread(deadlineId: Int, blocks: [RecoveryBlock]) async throws {
+        struct Result: Decodable { let created: Int }
+        let _: Result = try await request("/deadlines/\(deadlineId)/respread?tz=\(tz)",
+                                          method: "POST",
+                                          body: ["blocks": blocks.map {
+                                              ["start": $0.start, "minutes": $0.minutes,
+                                               "title": $0.title] as [String: Any]
+                                          }])
+    }
+
+    static func backlog() async throws -> [BacklogItem] {
+        try await request("/backlog")
+    }
+
+    /// Auto (start nil) → first free slot in the next 7 days; otherwise the
+    /// user's picked time. Returns the ISO start it landed on.
+    static func scheduleBacklog(id: Int, at start: String? = nil) async throws
+        -> (title: String, start: String) {
+        struct Result: Decodable { let title: String; let start: String }
+        let r: Result = try await request("/backlog/\(id)/schedule?tz=\(tz)",
+                                          method: "POST", body: ["start": start as Any])
+        return (r.title, r.start)
+    }
+
+    static func dropBacklog(id: Int) async throws {
+        struct OK: Decodable { let ok: Bool }
+        let _: OK = try await request("/backlog/\(id)", method: "DELETE")
     }
 
     static func prep() async throws -> PrepResponse {

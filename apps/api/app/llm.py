@@ -53,6 +53,16 @@ into separate blocks, one per day, each with "date" (YYYY-MM-DD computed from "n
 Weight blocks heavier closer to a deadline. Tasks without "date" mean today. A stated \
 deadline event ("exam Friday at 2pm") is its own task on that date; if its time is \
 unknown, ask.
+- When the work targets a stated deadline with a time budget ("6 hours of prep \
+before Friday's exam"), ALSO emit a "deadlines" entry {title, due_date, \
+total_minutes, category} and tag each related work block with "deadline": that \
+same title. The deadline event itself (the exam) is NOT tagged — only the prep.
+- Tasks the user explicitly leaves vague in time ("sometime", "sometime this/next \
+week", "at some point", "no rush", "whenever") → ONE task with "someday": true and \
+no "date". They go to the backlog, not the calendar. NEVER expand "sometime" into \
+one copy per day — "a movie sometime next week" is exactly ONE someday task, never \
+seven. Never mark a task someday unless the user's words say so. Someday tasks \
+still need duration_minutes (ask if unknown).
 - Recurring schedules ("every Mon/Wed", "this semester") → set "recurrence" \
 (days, start_time, end_time, until). Classes are deep_work.
 - Daily schedule blocks the user wants permanently reserved ("block my sleep \
@@ -69,6 +79,12 @@ the calendar. If the user's message adjusts it ("Sunday morning 10 AM", "make it
 30 minutes", "move the call to 6"), return intent "plan" with the corrected FULL \
 task list for those items (set "date"/"start"/"duration_minutes" from the message). \
 They are not in already_scheduled_today, so keep them in "tasks".
+- Questions about the user's OWN history or schedule ("how many hours of deep \
+work this week?", "when did I last work out?", "what does Thursday look like?") \
+→ intent "other": answer in "reply" with specific numbers/dates computed from \
+history_last_14_days, scheduled_upcoming_days, and fixed_events_today. Convert \
+minutes to hours. NEVER invent figures that are not derivable from that data — \
+if the data can't answer it, say so plainly.
 - intent "other": greetings or questions → answer briefly in "reply". NEVER \
 answer with "noted" while a pending proposal exists — apply the change instead.
 - All time fields ("start", "new_start", "start_time", "end_time") are 24-hour \
@@ -83,13 +99,16 @@ Respond with ONLY a JSON object in this exact shape (no markdown fences):
 SCHEMA = """{"intent": "plan"|"edit"|"other", "reply": "one short sentence",
  "tasks": [{"title": str, "category": "deep_work"|"health"|"meals"|"admin"|"social",
    "duration_minutes": int|null, "start": "HH:MM"|null, "date": "YYYY-MM-DD"|null,
+   "someday": bool, "deadline": str|null,
    "window": "morning"|"afternoon"|"evening"|null, "location": str|null,
    "recurrence": {"days": ["MO".."SU"], "start_time": "HH:MM", "end_time": "HH:MM",
      "until": "YYYY-MM-DD"|null}|null}],
  "questions": [{"task_title": str, "question": str, "suggestions": [str]}],
  "edits": [{"match_title": str, "new_start": "HH:MM"|null,
    "new_duration_minutes": int|null, "move_to_date": "YYYY-MM-DD"|null,
-   "move_to_tomorrow": bool, "cancel": bool}]}"""
+   "move_to_tomorrow": bool, "cancel": bool}],
+ "deadlines": [{"title": str, "due_date": "YYYY-MM-DD", "total_minutes": int,
+   "category": str}]}"""
 
 
 def _clean(text: str) -> str:
@@ -101,7 +120,7 @@ def _clean(text: str) -> str:
 
 
 def call(profile: dict, fixed_events: list, scheduled_today: list, upcoming: list,
-         state: dict, message: str, now_iso: str, tz: str) -> LLMResult:
+         history_stats: list, state: dict, message: str, now_iso: str, tz: str) -> LLMResult:
     key = os.environ.get("OPENROUTER_API_KEY")
     if not key:
         raise HTTPException(500, "OPENROUTER_API_KEY is not configured")
@@ -111,6 +130,7 @@ def call(profile: dict, fixed_events: list, scheduled_today: list, upcoming: lis
         "fixed_events_today": fixed_events,
         "already_scheduled_today": scheduled_today,
         "scheduled_upcoming_days": upcoming,
+        "history_last_14_days": history_stats,
         "pending_state": state,
     })
     system = SYSTEM.replace("{schema}", SCHEMA)

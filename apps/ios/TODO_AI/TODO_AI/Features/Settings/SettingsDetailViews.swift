@@ -380,3 +380,75 @@ struct TermsView: View {
         }
     }
 }
+
+// ── weekly time budgets (engine: declare where hours should go) ─────
+
+struct BudgetsView: View {
+    @State private var profile: Profile?
+    @State private var budgets: [String: Double] = [:]
+
+    private var divider: some View { DS.hairline.frame(height: 0.5) }
+
+    private var categories: [String] {
+        ["deep_work", "health", "meals", "admin", "social"]
+            + (profile?.customCategories ?? [])
+    }
+
+    var body: some View {
+        SubScreen(title: "Weekly budgets") {
+            Text("Hours per week each category should get. The weekly review scores against these — 0 means no target.")
+                .font(DS.inter(12.5)).foregroundStyle(DS.ash)
+
+            VStack(alignment: .leading, spacing: 0) {
+                ForEach(Array(categories.enumerated()), id: \.element) { i, cat in
+                    HStack(spacing: 10) {
+                        Circle().fill(DS.category(cat)).frame(width: 6, height: 6)
+                        Text(cat.replacingOccurrences(of: "_", with: " ").capitalized)
+                            .font(DS.inter(14)).foregroundStyle(DS.bone)
+                        Spacer()
+                        stepper(cat)
+                    }
+                    .frame(minHeight: 52)
+                    if i < categories.count - 1 { divider }
+                }
+            }
+            .padding(.horizontal, 14)
+            .background(DS.carbon)
+            .cornerRadius(12)
+            .overlay(RoundedRectangle(cornerRadius: 12).stroke(DS.graphite, lineWidth: 1))
+        }
+        .task {
+            profile = (try? await API.me())?.profile
+            budgets = profile?.weeklyBudgets ?? [:]
+        }
+    }
+
+    private func stepper(_ cat: String) -> some View {
+        let hours = budgets[cat] ?? 0
+        return HStack(spacing: 12) {
+            stepButton("minus") { set(cat, max(0, hours - 1)) }
+            Text(hours == 0 ? "—" : "\(String(format: "%.2g", hours))h")
+                .font(DS.mono(12)).foregroundStyle(hours == 0 ? DS.ash : DS.paper)
+                .frame(width: 34)
+            stepButton("plus") { set(cat, min(60, hours + 1)) }
+        }
+    }
+
+    private func stepButton(_ symbol: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: symbol)
+                .font(.system(size: 11, weight: .medium)).foregroundStyle(DS.mist)
+                .frame(width: 30, height: 30)
+                .overlay(Circle().stroke(DS.graphite, lineWidth: 0.5))
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func set(_ cat: String, _ hours: Double) {
+        if hours == 0 { budgets.removeValue(forKey: cat) } else { budgets[cat] = hours }
+        guard var p = profile else { return }
+        p.weeklyBudgets = budgets
+        profile = p
+        Task { try? await API.saveProfile(p) }
+    }
+}

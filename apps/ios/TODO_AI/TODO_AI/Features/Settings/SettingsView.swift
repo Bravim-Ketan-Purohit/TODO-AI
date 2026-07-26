@@ -29,6 +29,11 @@ struct SettingsView: View {
                                 row("Schedule", anchorSummary)
                             }
                             .buttonStyle(.plain)
+                            divider
+                            NavigationLink(value: "budgets") {
+                                row("Weekly budgets", "")
+                            }
+                            .buttonStyle(.plain)
                         }
                         group("CALENDAR") {
                             row("Google account", maskedEmail)
@@ -84,6 +89,7 @@ struct SettingsView: View {
             .navigationDestination(for: String.self) { destination in
                 switch destination {
                 case "anchors": ScheduleView(me: me)
+                case "budgets": BudgetsView()
                 case "colors": CategoryColorsView()
                 default: TermsView()
                 }
