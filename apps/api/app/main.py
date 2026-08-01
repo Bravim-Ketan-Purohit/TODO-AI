@@ -64,19 +64,35 @@ def day_view(day: date, tz: str = "UTC", user=Depends(current_user)) -> dict:
 
 @app.get("/history")
 def history(days: int = 30, tz: str = "UTC", user=Depends(current_user)) -> list[dict]:
-    today = datetime.now(gcal.zone(tz)).date()
+    z = gcal.zone(tz)
+    now = datetime.now(z)
+    today = now.date()
     since = (today - timedelta(days=days)).isoformat()
+    week_since = (today - timedelta(days=6)).isoformat()
+    noted = {r["date"] for r in db.query(
+        "SELECT date FROM notes WHERE user_id=?", (user["id"],))}
     rows = db.query(
-        "SELECT date, status, category FROM tasks"
+        "SELECT date, status, category, start_ts, end_ts FROM tasks"
         " WHERE user_id=? AND date>=? AND date<=? AND is_anchor=0 ORDER BY date DESC, start_ts",
         (user["id"], since, today.isoformat()))
     out: dict[str, dict] = {}
     for r in rows:
-        d = out.setdefault(r["date"], {"date": r["date"], "done": 0, "total": 0, "categories": []})
+        d = out.setdefault(r["date"], {"date": r["date"], "done": 0, "total": 0,
+                                       "categories": [], "dots": [],
+                                       "has_note": r["date"] in noted})
         d["total"] += 1
         d["done"] += r["status"] == "completed"
         if r["category"] not in d["categories"]:
             d["categories"].append(r["category"])
+        # dot-matrix strip (design 6c): per-task dots for the last 7 days
+        if r["date"] >= week_since:
+            current = (r["date"] == today.isoformat()
+                       and datetime.fromisoformat(r["start_ts"]) <= now
+                       < datetime.fromisoformat(r["end_ts"])
+                       and r["status"] not in ("completed", "missed"))
+            d["dots"].append({"category": r["category"],
+                              "done": r["status"] == "completed",
+                              "current": current})
     return list(out.values())
 
 
@@ -434,6 +450,74 @@ def drop_backlog(item_id: int, user=Depends(current_user)) -> dict:
     return {"ok": True}
 
 
+# ── micro-gap filler: the 25 minutes before your next thing ─────────
+
+@app.get("/gapfill")
+def gapfill(tz: str = "UTC", user=Depends(current_user)) -> dict:
+    """If a modest free gap sits between now and the next scheduled thing,
+    offer one backlog item that genuinely fits it."""
+    z = gcal.zone(tz)
+    now = datetime.now(z)
+    today = now.date()
+    upcoming: list[tuple[datetime, str]] = []
+    for ev in gcal.external_events(user, today, tz):
+        upcoming.append((datetime.fromisoformat(ev["start"]), ev["title"]))
+    for a in db.anchors_for_date(user["id"], today):
+        upcoming.append((gcal.combine(today, a["start"], z), a["title"]))
+    for r in db.query(
+            "SELECT title, start_ts FROM tasks WHERE user_id=? AND date=? AND is_anchor=0"
+            " AND status IN ('planned','rescheduled')", (user["id"], today.isoformat())):
+        upcoming.append((datetime.fromisoformat(r["start_ts"]), r["title"]))
+    future = sorted((s, t) for s, t in upcoming if s > now)
+    if not future:
+        return {"gap": None}
+    next_start, next_title = future[0]
+    gap_min = int((next_start - now).total_seconds() // 60)
+    if not 20 <= gap_min <= 120:  # too tight to bother / big enough for real planning
+        return {"gap": None}
+    candidates = [b for b in db.query(
+        "SELECT * FROM backlog WHERE user_id=? ORDER BY id", (user["id"],))
+        if b["duration_minutes"] <= gap_min - 5]
+    if not candidates:
+        return {"gap": None}
+    b = candidates[0]
+    start_at = now + timedelta(minutes=(5 - now.minute % 5) % 5 or 5)
+    return {"gap": {"minutes": gap_min, "until_title": next_title,
+                    "until_time": next_start.strftime("%H:%M"),
+                    "start": start_at.replace(second=0, microsecond=0).isoformat(),
+                    "item": {"id": b["id"], "title": b["title"], "category": b["category"],
+                             "duration_minutes": b["duration_minutes"]}}}
+
+
+# ── morning briefing: a notification worth opening ──────────────────
+
+@app.get("/briefing")
+def briefing(tz: str = "UTC", user=Depends(current_user)) -> dict:
+    """Composed the evening before (on app-background / bg refresh) for the
+    next 7:15 notification: tomorrow's shape, today's loose ends, backlog."""
+    z = gcal.zone(tz)
+    today = datetime.now(z).date()
+    tomorrow = today + timedelta(days=1)
+    fixed = gcal.external_events(user, tomorrow, tz)
+    parts = []
+    if fixed:
+        first = min(datetime.fromisoformat(ev["start"]) for ev in fixed)
+        parts.append(f"{len(fixed)} meeting{'s' if len(fixed) > 1 else ''}, "
+                     f"first at {first.strftime('%H:%M')}")
+    else:
+        parts.append("No meetings")
+    open_count = len(db.query(
+        "SELECT id FROM tasks WHERE user_id=? AND date=? AND is_anchor=0"
+        " AND status IN ('planned','rescheduled')", (user["id"], today.isoformat())))
+    if open_count:
+        parts.append(f"{open_count} open from today")
+    parked = len(db.query("SELECT id FROM backlog WHERE user_id=?", (user["id"],)))
+    if parked:
+        parts.append(f"{parked} parked item{'s' if parked > 1 else ''} waiting")
+    return {"title": "Ready to plan your day?",
+            "body": ". ".join(parts) + ". Brain-dump when ready."}
+
+
 # ── meeting prep (design 5e) — offered, never auto-added ────────────
 
 @app.get("/prep")
@@ -712,5 +796,198 @@ def week_review(tz: str = "UTC", user=Depends(current_user)) -> dict:
                     "options": ["Shift to 16:00+", "Keep as is"],
                 }
                 break
+    # Sunday ritual (design 7b-7e) extras: best day, budget seeds, dropped list
+    by_day: dict[str, list] = {}
+    for r in rows:
+        by_day.setdefault(r["date"], []).append(r)
+    best_day = None
+    best_rate = -1.0
+    for d, rs in by_day.items():
+        if len(rs) >= 3:
+            rate = sum(r["status"] == "completed" for r in rs) / len(rs)
+            if rate > best_rate:
+                best_rate, best_day = rate, d
+    if best_day:
+        best_day = datetime.fromisoformat(best_day + "T00:00:00").strftime("%A")
+
+    # first-run budget seeds: last week's actual completed hours per category
+    for c in categories:
+        if c["budget_hours"] is None:
+            c["suggested_budget"] = max(1, round(c["done_hours"] or 0))
+
+    today_iso = today.isoformat()
+    dropped = [{"id": r["id"], "title": r["title"], "category": r["category"],
+                "date": r["date"]}
+               for r in db.query(
+                   "SELECT id, title, category, date FROM tasks WHERE user_id=?"
+                   " AND date>=? AND date<? AND is_anchor=0"
+                   " AND status IN ('missed','planned','rescheduled')"
+                   " ORDER BY date", (user["id"], since, today_iso))]
+
     return {"done": done, "total": total, "categories": categories,
-            "avg_slip_min": avg_slip, "insight": insight}
+            "avg_slip_min": avg_slip, "insight": insight,
+            "best_day": best_day, "dropped": dropped}
+
+
+class ReviewResolveIn(BaseModel):
+    carry: list[int] = []    # → next week's first free slots
+    backlog: list[int] = []  # → park
+    letgo: list[int] = []    # → mark missed, move on
+
+
+@app.post("/week-review/resolve")
+def resolve_review(body: ReviewResolveIn, tz: str = "UTC",
+                   user=Depends(current_user)) -> dict:
+    """Step 4 of the Sunday ritual: what happens to the week's dropped tasks."""
+    z = gcal.zone(tz)
+    today = datetime.now(z).date()
+    from .scheduler import suggest_slots
+    profile = Profile.model_validate(json.loads(user["profile_json"] or "{}"))
+    carried = []
+    for tid in body.carry:
+        rows = db.query("SELECT * FROM tasks WHERE id=? AND user_id=?", (tid, user["id"]))
+        if not rows:
+            continue
+        r = rows[0]
+        dur = _dur_min(r)
+        for offset in range(1, 8):  # tomorrow onward — next week's room
+            day = today + timedelta(days=offset)
+            day_start = datetime(day.year, day.month, day.day, tzinfo=z)
+            slots = suggest_slots(dur, _today_busy(user, day, tz, z), profile,
+                                  day_start, count=1)
+            if slots:
+                start = gcal.combine(day, slots[0], z)
+                end = start + timedelta(minutes=dur)
+                event_id = gcal.insert_event(user, r["title"], start.isoformat(),
+                                             end.isoformat(), tz, category=r["category"])
+                db.execute(
+                    "INSERT INTO tasks (user_id, date, title, category, start_ts, end_ts,"
+                    " status, google_event_id) VALUES (?,?,?,?,?,?,'planned',?)",
+                    (user["id"], day.isoformat(), r["title"], r["category"],
+                     start.isoformat(), end.isoformat(), event_id))
+                carried.append({"title": r["title"],
+                                "when": f"{day.strftime('%a')} {slots[0]}"})
+                break
+        db.execute("UPDATE tasks SET status='missed' WHERE id=? AND status != 'completed'",
+                   (tid,))
+    for tid in body.backlog:
+        rows = db.query("SELECT * FROM tasks WHERE id=? AND user_id=?", (tid, user["id"]))
+        if rows:
+            r = rows[0]
+            db.execute("INSERT INTO backlog (user_id, title, category, duration_minutes)"
+                       " VALUES (?,?,?,?)",
+                       (user["id"], r["title"], r["category"], _dur_min(r)))
+            db.execute("UPDATE tasks SET status='missed' WHERE id=? AND status != 'completed'",
+                       (tid,))
+    for tid in body.letgo:
+        db.execute("UPDATE tasks SET status='missed' WHERE id=? AND user_id=?"
+                   " AND status != 'completed'", (tid, user["id"]))
+    return {"carried": carried, "parked": len(body.backlog), "let_go": len(body.letgo)}
+
+
+# ── day notes (design 7o-7r): the calendar becomes a journal ────────
+
+class NoteIn(BaseModel):
+    mood: str  # good | ok | rough
+    text: str = ""
+    has_photo: bool = False
+
+
+@app.put("/notes/{day}")
+def put_note(day: date, body: NoteIn, user=Depends(current_user)) -> dict:
+    db.execute(
+        "INSERT INTO notes (user_id, date, mood, text, has_photo) VALUES (?,?,?,?,?)"
+        " ON CONFLICT(user_id, date) DO UPDATE SET mood=excluded.mood,"
+        " text=excluded.text, has_photo=excluded.has_photo",
+        (user["id"], day.isoformat(), body.mood, body.text, int(body.has_photo)))
+    return {"ok": True}
+
+
+@app.get("/notes")
+def list_notes(user=Depends(current_user)) -> list[dict]:
+    out = []
+    for r in db.query("SELECT * FROM notes WHERE user_id=? ORDER BY date DESC",
+                      (user["id"],)):
+        day_tasks = db.query(
+            "SELECT status FROM tasks WHERE user_id=? AND date=? AND is_anchor=0",
+            (user["id"], r["date"]))
+        out.append({"date": r["date"], "mood": r["mood"], "text": r["text"],
+                    "has_photo": bool(r["has_photo"]),
+                    "done": sum(t["status"] == "completed" for t in day_tasks),
+                    "total": len(day_tasks)})
+    return out
+
+
+# ── wrapped (design 7i-7m): the month, as a story ───────────────────
+
+@app.get("/wrapped")
+def wrapped(tz: str = "UTC", user=Depends(current_user)) -> dict:
+    """Last calendar month's story: big number, weekly rhythm, one change."""
+    z = gcal.zone(tz)
+    today = datetime.now(z).date()
+    first_this = today.replace(day=1)
+    last_month_end = first_this - timedelta(days=1)
+    start = last_month_end.replace(day=1)
+    prev_start = (start - timedelta(days=1)).replace(day=1)
+
+    def month_rows(a, b):
+        return db.query(
+            "SELECT * FROM tasks WHERE user_id=? AND date>=? AND date<=? AND is_anchor=0",
+            (user["id"], a.isoformat(), b.isoformat()))
+
+    rows = month_rows(start, last_month_end)
+    prev_rows = month_rows(prev_start, start - timedelta(days=1))
+    if not rows:
+        return {"wrapped": None}
+
+    def deep_hours(rs):
+        return round(sum(_dur_min(r) for r in rs
+                         if r["category"] == "deep_work"
+                         and r["status"] == "completed") / 60)
+
+    total = len(rows)
+    done = sum(r["status"] == "completed" for r in rows)
+    deep = deep_hours(rows)
+    deep_prev = deep_hours(prev_rows)
+
+    # weekly rhythm: planned-Monday flag + completion pct per week
+    weeks = []
+    wk_start = start - timedelta(days=start.weekday())
+    while wk_start <= last_month_end:
+        wk_end = wk_start + timedelta(days=6)
+        wrs = [r for r in rows if wk_start.isoformat() <= r["date"] <= wk_end.isoformat()]
+        if wrs:
+            monday = wk_start.isoformat()
+            planned_monday = any(r["date"] == monday
+                                 and int(r["start_ts"][11:13]) < 12 for r in wrs)
+            weeks.append({"planned_monday": planned_monday,
+                          "pct": round(100 * sum(r["status"] == "completed"
+                                                 for r in wrs) / len(wrs))})
+        wk_start += timedelta(days=7)
+
+    # the one change: category whose completion improved most, half vs half
+    mid = start + timedelta(days=15)
+    change = None
+    best_delta = 14  # only report a real shift (>=15 points)
+    for cat in {r["category"] for r in rows}:
+        h1 = [r for r in rows if r["category"] == cat and r["date"] < mid.isoformat()]
+        h2 = [r for r in rows if r["category"] == cat and r["date"] >= mid.isoformat()]
+        if len(h1) >= 3 and len(h2) >= 3:
+            p1 = round(100 * sum(r["status"] == "completed" for r in h1) / len(h1))
+            p2 = round(100 * sum(r["status"] == "completed" for r in h2) / len(h2))
+            if p2 - p1 > best_delta:
+                best_delta = p2 - p1
+                change = {"category": cat, "before_pct": p1, "after_pct": p2}
+
+    return {"wrapped": {
+        "month": start.strftime("%B"),
+        "range_label": f"{start.strftime('%b %-d').upper()} — {last_month_end.strftime('%b %-d').upper()}",
+        "month_key": start.strftime("%Y-%m"),
+        "planned_days": len({r["date"] for r in rows}),
+        "total_tasks": total,
+        "landed_pct": round(100 * done / total),
+        "deep_hours": deep,
+        "deep_delta": deep - deep_prev if prev_rows else None,
+        "weeks": weeks,
+        "change": change,
+    }}

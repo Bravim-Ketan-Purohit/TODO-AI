@@ -5,6 +5,7 @@ struct DayTimelineView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var payload: DayPayload?
     @State private var focusBlock: Block?
+    @State private var note: NoteItem?
 
     private let pph: CGFloat = 44  // points per hour, from frame 1j
 
@@ -49,15 +50,38 @@ struct DayTimelineView: View {
     var body: some View {
         VStack(spacing: 0) {
             header
+            // day note (7q): quiet card above the timeline
+            if let note {
+                HStack(spacing: 12) {
+                    MoodGlyph(mood: note.mood)
+                    Text("\u{201C}\(note.text)\u{201D}")
+                        .font(DS.inter(13)).italic().foregroundStyle(Color(hex: 0xB4B8BD))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    if note.hasPhoto, let img = NotePhotoStore.load(note.date) {
+                        Image(uiImage: img)
+                            .resizable().scaledToFill()
+                            .frame(width: 34, height: 34)
+                            .clipShape(RoundedRectangle(cornerRadius: 7))
+                    }
+                }
+                .padding(13)
+                .background(DS.cardGradient)
+                .cornerRadius(14)
+                .overlay(RoundedRectangle(cornerRadius: 14).stroke(DS.cardStroke, lineWidth: 1))
+                .padding(.horizontal, 16).padding(.bottom, 10)
+            }
             ScrollView {
                 TimelineView(.everyMinute) { context in
                     canvas(now: context.date)
                 }
             }
         }
-        .background(DS.void)
+        .background(DS.pageGradient)
         .toolbar(.hidden, for: .navigationBar)
-        .task { payload = try? await API.day(date) }
+        .task {
+            payload = try? await API.day(date)
+            note = ((try? await API.notes()) ?? []).first { $0.date == date }
+        }
         .fullScreenCover(item: $focusBlock) { block in
             let next = blocks.first { $0.startMin >= block.endMin }
             FocusSessionView(title: block.title, category: block.category,
@@ -297,6 +321,6 @@ private struct ShareCardView: View {
         }
         .padding(24)
         .frame(width: 360)
-        .background(DS.void)
+        .background(DS.pageGradient)
     }
 }

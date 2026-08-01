@@ -30,7 +30,7 @@ struct SubScreen<Content: View>: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
-        .background(DS.void)
+        .background(DS.pageGradient)
         .toolbar(.hidden, for: .navigationBar)
     }
 }
@@ -93,7 +93,7 @@ struct ScheduleView: View {
                 Text("Add to schedule")
                     .font(DS.inter(14, .medium)).foregroundStyle(Color(hex: 0x08090A))
                     .frame(maxWidth: .infinity).frame(height: 44)
-                    .background(DS.acidLime)
+                    .background(DS.limeGradient)
                     .clipShape(RoundedRectangle(cornerRadius: 6))
             }
             .buttonStyle(.plain)
@@ -161,9 +161,9 @@ struct ScheduleView: View {
     private func card(@ViewBuilder content: () -> some View) -> some View {
         VStack(spacing: 0, content: content)
             .padding(.horizontal, 14)
-            .background(DS.carbon)
-            .cornerRadius(12)
-            .overlay(RoundedRectangle(cornerRadius: 12).stroke(DS.graphite, lineWidth: 1))
+            .background(DS.cardGradient)
+            .cornerRadius(14)
+            .overlay(RoundedRectangle(cornerRadius: 14).stroke(DS.cardStroke, lineWidth: 1))
     }
 
     private func anchorRow(_ title: String, _ detail: String) -> some View {
@@ -233,7 +233,7 @@ private struct AddScheduleSheet: View {
                 Text(busy ? "Adding…" : "Add block")
                     .font(DS.inter(15, .medium)).foregroundStyle(Color(hex: 0x08090A))
                     .frame(maxWidth: .infinity).frame(height: 48)
-                    .background(DS.acidLime)
+                    .background(DS.limeGradient)
                     .clipShape(RoundedRectangle(cornerRadius: 6))
             }
             .buttonStyle(.plain)
@@ -268,9 +268,9 @@ struct CategoryColorsView: View {
                 }
             }
             .padding(.horizontal, 14)
-            .background(DS.carbon)
-            .cornerRadius(12)
-            .overlay(RoundedRectangle(cornerRadius: 12).stroke(DS.graphite, lineWidth: 1))
+            .background(DS.cardGradient)
+            .cornerRadius(14)
+            .overlay(RoundedRectangle(cornerRadius: 14).stroke(DS.cardStroke, lineWidth: 1))
 
             statusPreview
         }
@@ -349,9 +349,9 @@ struct CategoryColorsView: View {
         }
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(DS.carbon)
-        .cornerRadius(12)
-        .overlay(RoundedRectangle(cornerRadius: 12).stroke(DS.graphite, lineWidth: 1))
+        .background(DS.cardGradient)
+        .cornerRadius(14)
+        .overlay(RoundedRectangle(cornerRadius: 14).stroke(DS.cardStroke, lineWidth: 1))
     }
 
     private func statusChip(_ label: String, color: Color, opacity: Double, struck: Bool) -> some View {
@@ -413,9 +413,9 @@ struct BudgetsView: View {
                 }
             }
             .padding(.horizontal, 14)
-            .background(DS.carbon)
-            .cornerRadius(12)
-            .overlay(RoundedRectangle(cornerRadius: 12).stroke(DS.graphite, lineWidth: 1))
+            .background(DS.cardGradient)
+            .cornerRadius(14)
+            .overlay(RoundedRectangle(cornerRadius: 14).stroke(DS.cardStroke, lineWidth: 1))
         }
         .task {
             profile = (try? await API.me())?.profile

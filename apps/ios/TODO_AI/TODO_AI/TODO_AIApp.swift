@@ -31,7 +31,10 @@ struct TODO_AIApp: App {
             .preferredColorScheme(.dark)
         }
         .onChange(of: scenePhase) { _, phase in
-            if phase == .background { Self.scheduleRefresh() }
+            if phase == .background {
+                Self.scheduleRefresh()
+                Task { await Self.scheduleBriefing() }
+            }
         }
     }
 
@@ -41,9 +44,29 @@ struct TODO_AIApp: App {
         try? BGTaskScheduler.shared.submit(request)
     }
 
+    /// Live morning briefing: composed the evening before, replaces the static
+    /// 7:15 nudge with real content (tomorrow's meetings, loose ends, backlog).
+    static func scheduleBriefing() async {
+        guard !UserDefaults.standard.bool(forKey: "nudgesOff"),
+              let briefing = try? await API.briefing() else { return }
+        let content = UNMutableNotificationContent()
+        content.title = briefing.title
+        content.body = briefing.body
+        content.sound = .default
+        var comps = DateComponents()
+        comps.hour = 7
+        comps.minute = 15
+        // same id as the static repeating nudge — this content-full one-shot
+        // replaces it; re-scheduled every time the app goes to background
+        try? await UNUserNotificationCenter.current().add(UNNotificationRequest(
+            identifier: "morning-plan", content: content,
+            trigger: UNCalendarNotificationTrigger(dateMatching: comps, repeats: false)))
+    }
+
     static func handleRefresh(_ task: BGAppRefreshTask) {
         scheduleRefresh()  // chain the next check
         let work = Task {
+            await scheduleBriefing()  // keep tomorrow's 7:15 content fresh
             if let d = (try? await API.disruptions())?.disruption,
                let first = d.moves.first {
                 let content = UNMutableNotificationContent()

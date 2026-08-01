@@ -86,7 +86,7 @@ struct BacklogDrawer: View {
                     Text("Auto")
                         .font(DS.inter(12.5, .medium)).foregroundStyle(Color(hex: 0x08090A))
                         .padding(.horizontal, 16).padding(.vertical, 8)
-                        .background(DS.acidLime)
+                        .background(DS.limeGradient)
                         .clipShape(Capsule())
                 }
                 .buttonStyle(.plain)
@@ -180,7 +180,7 @@ private struct SchedulePickSheet: View {
                 Text("Schedule")
                     .font(DS.inter(15, .medium)).foregroundStyle(Color(hex: 0x08090A))
                     .frame(maxWidth: .infinity).frame(height: 48)
-                    .background(DS.acidLime)
+                    .background(DS.limeGradient)
                     .clipShape(RoundedRectangle(cornerRadius: 6))
             }
             .buttonStyle(.plain)

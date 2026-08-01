@@ -74,6 +74,10 @@ new_duration_minutes / cancel). "Push X to tomorrow" → move_to_tomorrow true (
 new_start null to reuse the same time). Cross-day moves ("move Tuesday's prep to \
 Wednesday") → move_to_date "YYYY-MM-DD" computed from "now"; the match may be on \
 any upcoming day, not just today.
+- "Batch the small tasks into one block" (with a pending proposal): merge the \
+short tasks (<=30 min) into ONE task titled "Batch: <name>, <name>, …" with their \
+summed duration_minutes and category "admin"; keep longer tasks unchanged; return \
+the FULL corrected list as intent "plan".
 - pending_state may hold "proposal": an UNAPPROVED plan, placed but NOT yet on \
 the calendar. If the user's message adjusts it ("Sunday morning 10 AM", "make it \
 30 minutes", "move the call to 6"), return intent "plan" with the corrected FULL \

@@ -28,12 +28,12 @@ enum Nudges {
 
     private static func scheduleWeekly() {
         let content = UNMutableNotificationContent()
-        content.title = "Your week, in review"
-        content.body = "What landed, what slipped, and one thing worth shifting."
+        content.title = "Your week is ready"
+        content.body = "90 seconds to close it out — mostly tapping."
         content.sound = .default
         var comps = DateComponents()
         comps.weekday = 1  // Sunday
-        comps.hour = 20
+        comps.hour = 18    // design 7a: the 6pm invitation
         UNUserNotificationCenter.current().add(UNNotificationRequest(
             identifier: "weekly-review", content: content,
             trigger: UNCalendarNotificationTrigger(dateMatching: comps, repeats: true)))

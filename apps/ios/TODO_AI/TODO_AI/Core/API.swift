@@ -142,6 +142,7 @@ struct WeekCategory: Decodable, Hashable {
     let pct: Int
     let doneHours: Double?
     let budgetHours: Double?
+    let suggestedBudget: Double?
 }
 
 struct WeekInsight: Decodable {
@@ -151,12 +152,32 @@ struct WeekInsight: Decodable {
     let options: [String]
 }
 
-struct WeekReview: Decodable {
+struct WeekReview: Decodable, Identifiable {
+    var id: String { "\(done)-\(total)-\(dropped.count)" }
     let done: Int
     let total: Int
     let categories: [WeekCategory]
     let avgSlipMin: Int?
     let insight: WeekInsight?
+    let bestDay: String?
+    let dropped: [DroppedTask]
+}
+
+struct GapOffer: Decodable {
+    let minutes: Int
+    let untilTitle: String
+    let untilTime: String
+    let start: String
+    let item: BacklogItem
+}
+
+struct GapResponse: Decodable {
+    let gap: GapOffer?
+}
+
+struct Briefing: Decodable {
+    let title: String
+    let body: String
 }
 
 struct PrepOffer: Decodable {
@@ -236,12 +257,65 @@ struct DayPayload: Decodable {
     let fixed: [FixedEvent]
 }
 
+struct DayDot: Decodable, Hashable {
+    let category: String
+    let done: Bool
+    let current: Bool
+}
+
 struct HistoryDay: Decodable, Identifiable {
     let date: String
     let done: Int
     let total: Int
     let categories: [String]
+    let dots: [DayDot]
+    let hasNote: Bool
     var id: String { date }
+}
+
+struct NoteItem: Decodable, Identifiable, Hashable {
+    let date: String
+    let mood: String
+    let text: String
+    let hasPhoto: Bool
+    let done: Int
+    let total: Int
+    var id: String { date }
+}
+
+struct DroppedTask: Decodable, Identifiable, Hashable {
+    let id: Int
+    let title: String
+    let category: String
+    let date: String
+}
+
+struct WrappedWeek: Decodable, Hashable {
+    let plannedMonday: Bool
+    let pct: Int
+}
+
+struct WrappedChange: Decodable, Hashable {
+    let category: String
+    let beforePct: Int
+    let afterPct: Int
+}
+
+struct WrappedData: Decodable {
+    let month: String
+    let rangeLabel: String
+    let monthKey: String
+    let plannedDays: Int
+    let totalTasks: Int
+    let landedPct: Int
+    let deepHours: Int
+    let deepDelta: Int?
+    let weeks: [WrappedWeek]
+    let change: WrappedChange?
+}
+
+struct WrappedResponse: Decodable {
+    let wrapped: WrappedData?
 }
 
 struct Profile: Codable {
@@ -381,6 +455,28 @@ enum API {
         try await request("/week-review?tz=\(tz)")
     }
 
+    static func resolveReview(carry: [Int], backlog: [Int], letgo: [Int]) async throws {
+        struct Result: Decodable { let parked: Int }
+        let _: Result = try await request("/week-review/resolve?tz=\(tz)", method: "POST",
+                                          body: ["carry": carry, "backlog": backlog,
+                                                 "letgo": letgo])
+    }
+
+    static func wrapped() async throws -> WrappedResponse {
+        try await request("/wrapped?tz=\(tz)")
+    }
+
+    static func notes() async throws -> [NoteItem] {
+        try await request("/notes")
+    }
+
+    static func putNote(date: String, mood: String, text: String, hasPhoto: Bool) async throws {
+        struct OK: Decodable { let ok: Bool }
+        let _: OK = try await request("/notes/\(date)", method: "PUT",
+                                      body: ["mood": mood, "text": text,
+                                             "has_photo": hasPhoto])
+    }
+
     static func respread(deadlineId: Int, blocks: [RecoveryBlock]) async throws {
         struct Result: Decodable { let created: Int }
         let _: Result = try await request("/deadlines/\(deadlineId)/respread?tz=\(tz)",
@@ -412,6 +508,14 @@ enum API {
 
     static func prep() async throws -> PrepResponse {
         try await request("/prep?tz=\(tz)")
+    }
+
+    static func gapfill() async throws -> GapResponse {
+        try await request("/gapfill?tz=\(tz)")
+    }
+
+    static func briefing() async throws -> Briefing {
+        try await request("/briefing?tz=\(tz)")
     }
 
     static func addPrep(_ offer: PrepOffer) async throws {

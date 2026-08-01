@@ -84,7 +84,7 @@ struct SettingsView: View {
                     .padding(.horizontal, 20)
                 }
             }
-            .background(DS.void)
+            .background(DS.pageGradient)
             .toolbar(.hidden, for: .navigationBar)
             .navigationDestination(for: String.self) { destination in
                 switch destination {
@@ -115,9 +115,9 @@ struct SettingsView: View {
             Text(label).font(DS.mono(9)).kerning(1.1).foregroundStyle(DS.ash)
             VStack(spacing: 0, content: content)
                 .padding(.horizontal, 14)
-                .background(DS.carbon)
-                .cornerRadius(12)
-                .overlay(RoundedRectangle(cornerRadius: 12).stroke(DS.graphite, lineWidth: 1))
+                .background(DS.cardGradient)
+                .cornerRadius(14)
+                .overlay(RoundedRectangle(cornerRadius: 14).stroke(DS.cardStroke, lineWidth: 1))
         }
     }
 

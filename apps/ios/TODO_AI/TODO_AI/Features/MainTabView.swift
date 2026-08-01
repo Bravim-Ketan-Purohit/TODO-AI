@@ -72,7 +72,7 @@ private struct DisconnectedView: View {
                 Image(systemName: "calendar.badge.minus")
                     .font(.system(size: 24, weight: .light)).foregroundStyle(DS.ash)
                     .frame(width: 52, height: 52)
-                    .overlay(RoundedRectangle(cornerRadius: 12).stroke(DS.graphite, lineWidth: 1))
+                    .overlay(RoundedRectangle(cornerRadius: 14).stroke(DS.cardStroke, lineWidth: 1))
                     .padding(.bottom, 4)
                 Text("ERR · GOOGLE_TOKEN_EXPIRED")
                     .font(DS.mono(9)).kerning(0.9).foregroundStyle(DS.coral)
@@ -100,7 +100,7 @@ private struct DisconnectedView: View {
                     Text(busy ? "Connecting…" : "Reconnect Google")
                         .font(DS.inter(15, .medium)).foregroundStyle(Color(hex: 0x08090A))
                         .frame(maxWidth: .infinity).frame(height: 48)
-                        .background(DS.acidLime)
+                        .background(DS.limeGradient)
                         .clipShape(RoundedRectangle(cornerRadius: 6))
                 }
                 .buttonStyle(.plain)

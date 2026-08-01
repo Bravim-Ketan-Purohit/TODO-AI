@@ -23,6 +23,22 @@ enum DS {
     static let acidLime = Color(hex: 0xE4F222)
     static let coral = Color(hex: 0xEB5757)     // destructive (Sign out)
 
+    // Refinement pass (design v4): quiet depth — gradients, never flat
+    static let pageGradient = RadialGradient(
+        colors: [Color(hex: 0x0C0D12), Color(hex: 0x08090A)],
+        center: UnitPoint(x: 0.5, y: -0.05), startRadius: 0, endRadius: 700)
+    static let cardGradient = LinearGradient(
+        colors: [Color(hex: 0x121316), Color(hex: 0x0E0F10)],
+        startPoint: .top, endPoint: .bottom)
+    static let cardStroke = Color(hex: 0x26282C)
+    static let bubbleGradient = LinearGradient(
+        colors: [Color(hex: 0x1B1C1F), Color(hex: 0x151618)],
+        startPoint: .top, endPoint: .bottom)
+    static let bubbleStroke = Color(hex: 0x2A2C31)
+    static let limeGradient = LinearGradient(
+        colors: [Color(hex: 0xEFF65C), Color(hex: 0xE4F222)],
+        startPoint: .top, endPoint: .bottom)
+
     // Category hues (match backend + Google colorIds)
     static let categoryColors: [String: Color] = [
         "deep_work": Color(hex: 0x6366F1),

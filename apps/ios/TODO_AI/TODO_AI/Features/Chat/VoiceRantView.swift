@@ -117,7 +117,7 @@ struct VoiceRantView: View {
         }
         .padding(.horizontal, 20)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
-        .background(DS.void)
+        .background(DS.pageGradient)
         .onAppear { rec.start() }
         .onDisappear { rec.stop() }
         .onChange(of: rec.level) { _, new in
@@ -148,9 +148,9 @@ struct VoiceRantView: View {
             .frame(maxHeight: 220)
         }
         .padding(16)
-        .background(DS.carbon)
-        .cornerRadius(12)
-        .overlay(RoundedRectangle(cornerRadius: 12).stroke(DS.graphite, lineWidth: 1))
+        .background(DS.cardGradient)
+        .cornerRadius(14)
+        .overlay(RoundedRectangle(cornerRadius: 14).stroke(DS.cardStroke, lineWidth: 1))
     }
 
     private var deniedCard: some View {
@@ -167,9 +167,9 @@ struct VoiceRantView: View {
         }
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(DS.carbon)
-        .cornerRadius(12)
-        .overlay(RoundedRectangle(cornerRadius: 12).stroke(DS.graphite, lineWidth: 1))
+        .background(DS.cardGradient)
+        .cornerRadius(14)
+        .overlay(RoundedRectangle(cornerRadius: 14).stroke(DS.cardStroke, lineWidth: 1))
     }
 
     private var waveform: some View {
@@ -217,7 +217,7 @@ struct VoiceRantView: View {
                     .font(.system(size: 20, weight: .bold))
                     .foregroundStyle(Color(hex: 0x08090A))
                     .frame(width: 64, height: 64)
-                    .background(DS.acidLime)
+                    .background(DS.limeGradient)
                     .clipShape(Circle())
             }
             .buttonStyle(.plain)

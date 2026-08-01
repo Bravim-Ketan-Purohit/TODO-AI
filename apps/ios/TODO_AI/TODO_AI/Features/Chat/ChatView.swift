@@ -26,7 +26,9 @@ struct ChatMessage: Identifiable {
     var deletedTasks: [DeletedTask] = []  // events removed directly in gcal
     var backlogOffers: [BacklogItem] = []  // backlog drain (morning)
     var staleItems: [BacklogItem] = []     // parked 10+ days — decide now
+    var gapOffer: GapOffer?                // micro-gap before the next thing
     var deadlineAlert: DeadlineAlert?      // behind on a goal → re-spread offer
+    var notePrompt = false       // evening reflection (7o)
     var pending = false   // offline-held (3i)
     var undoHint = false  // "put it back" (3a)
     var suggestedCategories: [String] = []
@@ -39,6 +41,9 @@ struct ChatView: View {
     @AppStorage("lastReviewWeek") private var lastReviewWeek = ""
     @AppStorage("lastPrepMeeting") private var lastPrepMeeting = ""
     @AppStorage("dismissedDisruption") private var dismissedDisruption = ""
+    @AppStorage("lastGapOffer") private var lastGapOffer = ""
+    @AppStorage("lastNoteDate") private var lastNoteDate = ""
+    @State private var sundayReview: WeekReview?
     @State private var messages: [ChatMessage] = []
     @State private var input = ""
     @State private var sending = false
@@ -103,7 +108,17 @@ struct ChatView: View {
             }
             inputBar
         }
-        .background(DS.void)
+        .background(DS.pageGradient)
+        .fullScreenCover(item: $sundayReview) { review in
+            SundayReviewView(review: review) {
+                let wc = Calendar(identifier: .iso8601)
+                    .dateComponents([.yearForWeekOfYear, .weekOfYear], from: Date())
+                lastReviewWeek = "\(wc.yearForWeekOfYear ?? 0)-W\(wc.weekOfYear ?? 0)"
+                sundayReview = nil
+                messages.append(ChatMessage(role: .ai,
+                    text: "Week closed. See you Monday."))
+            }
+        }
         .sheet(isPresented: $showVoice) {
             // transcript lands in the composer — nothing sends until the user taps send
             VoiceRantView { transcript in
@@ -142,7 +157,13 @@ struct ChatView: View {
             deletedAnswer: { answerDeleted($0, tasks: $1) },
             backlogAnswer: { answerBacklog($0, offers: $1) },
             staleAnswer: { answerStale($0, items: $1) },
+            gapAnswer: { answerGap($0, gap: $1) },
             deadlineAnswer: { answerDeadline($0, alert: $1) },
+            noteSave: { saveNote(mood: $0, text: $1, photo: $2) },
+            noteSkip: {
+                lastNoteDate = todayYMD
+                for i in messages.indices { messages[i].notePrompt = false }
+            },
             retry: { Task { await retryPending() } },
             discard: { pendingText = nil; offline = false }
         )
@@ -197,6 +218,17 @@ struct ChatView: View {
         }
         // disruption reflow (5d): the calendar changed under a synced task
         await checkDisruptions()
+        // micro-gap filler: a parked item fits the space before the next thing
+        if let gap = (try? await API.gapfill())?.gap {
+            let key = "\(gap.item.id)-\(gap.untilTime)"
+            if key != lastGapOffer {
+                lastGapOffer = key
+                messages.append(ChatMessage(
+                    role: .ai,
+                    text: "\(gap.minutes) min until \(gap.untilTitle) — enough for this:",
+                    label: "TODO_AI · GAP", gapOffer: gap))
+            }
+        }
         // meeting prep (5e): offered, never auto-added; once per meeting
         if let prep = (try? await API.prep())?.prep, prep.meetingStart != lastPrepMeeting {
             lastPrepMeeting = prep.meetingStart
@@ -206,18 +238,14 @@ struct ChatView: View {
                     + "want \(prep.minutes) min of prep right before it?",
                 label: "TODO_AI · MEETING PREP", prep: prep))
         }
-        // weekly review (5b): Sundays, once per week (the 20:00 notification lands here)
+        // the Sunday Review ritual (7a-7f): Sundays, once per week — full screen
         let weekday = Calendar.current.component(.weekday, from: Date())
         let wc = Calendar(identifier: .iso8601)
             .dateComponents([.yearForWeekOfYear, .weekOfYear], from: Date())
         let weekID = "\(wc.yearForWeekOfYear ?? 0)-W\(wc.weekOfYear ?? 0)"
         if weekday == 1, lastReviewWeek != weekID,
            let review = try? await API.weekReview(), review.total > 0 {
-            lastReviewWeek = weekID
-            messages.append(ChatMessage(
-                role: .ai,
-                text: "\(review.done) of \(review.total) landed this week. By category:",
-                label: "TODO_AI · WEEK REVIEW", weekReview: review))
+            sundayReview = review
         }
         // evening recap (4e), once per day after 20:00
         let hour = Calendar.current.component(.hour, from: Date())
@@ -229,6 +257,14 @@ struct ChatView: View {
                 text: "Day's done — \(recap.done) of \(recap.total). "
                     + "\(recap.open.count) still open:",
                 label: "TODO_AI · DAY RECAP", recap: recap))
+        }
+        // day note prompt (7o): evenings, once, only if today has no note yet
+        if hour >= 20, lastNoteDate != todayYMD {
+            let existing = (try? await API.notes()) ?? []
+            if !existing.contains(where: { $0.date == todayYMD }) {
+                messages.append(ChatMessage(role: .ai, text: "How was today?",
+                                            label: "TODO_AI", notePrompt: true))
+            }
         }
     }
 
@@ -306,9 +342,9 @@ struct ChatView: View {
                     }
                 }
                 .padding(14)
-                .background(DS.carbon)
-                .cornerRadius(12)
-                .overlay(RoundedRectangle(cornerRadius: 12).stroke(DS.graphite, lineWidth: 1))
+                .background(DS.cardGradient)
+                .cornerRadius(14)
+                .overlay(RoundedRectangle(cornerRadius: 14).stroke(DS.cardStroke, lineWidth: 1))
             }
             HStack(spacing: 8) {
                 ForEach(["Plan my day", "Add one task", "Move something"], id: \.self) { chip in
@@ -358,8 +394,10 @@ struct ChatView: View {
                     .font(.system(size: 14, weight: .bold))
                     .foregroundStyle(Color(hex: 0x08090A))
                     .frame(width: 40, height: 40)
-                    .background(DS.acidLime.opacity(sending ? 0.35 : 1))
+                    .background(DS.limeGradient)
                     .clipShape(Circle())
+                    .opacity(sending ? 0.35 : 1)
+                    .shadow(color: DS.acidLime.opacity(sending ? 0 : 0.35), radius: 9, y: 4)
             }
             .buttonStyle(.plain)
             .disabled(sending || input.trimmingCharacters(in: .whitespaces).isEmpty)
@@ -586,6 +624,40 @@ struct ChatView: View {
         }
     }
 
+    private func saveNote(mood: String, text: String, photo: UIImage?) {
+        lastNoteDate = todayYMD
+        for i in messages.indices { messages[i].notePrompt = false }
+        if let photo { NotePhotoStore.save(photo, for: todayYMD) }
+        Task {
+            try? await API.putNote(date: todayYMD, mood: mood, text: text,
+                                   hasPhoto: photo != nil)
+            UINotificationFeedbackGenerator().notificationOccurred(.success)
+            messages.append(ChatMessage(role: .ai,
+                text: "Noted. It'll be on the day — and in your journal."))
+        }
+    }
+
+    private func answerGap(_ option: String, gap: GapOffer) {
+        for i in messages.indices { messages[i].gapOffer = nil }
+        guard option == "Do it now" else {
+            messages.append(ChatMessage(role: .ai, text: "Parked — enjoy the breather."))
+            return
+        }
+        Task {
+            sending = true
+            do {
+                let r = try await API.scheduleBacklog(id: gap.item.id, at: gap.start)
+                today = try? await API.today()
+                messages.append(ChatMessage(role: .ai,
+                    text: "\(r.title) starts at \(hhmm(r.start)) — synced. "
+                        + "Done before \(gap.untilTitle)."))
+            } catch {
+                routeError(error)
+            }
+            sending = false
+        }
+    }
+
     private func answerStale(_ option: String, items: [BacklogItem]) {
         for i in messages.indices { messages[i].staleItems = [] }
         Task {
@@ -729,7 +801,7 @@ struct ChatView: View {
             questions: reply.questions, plan: reply.plan,
             approvable: reply.type == "proposal",
             edits: reply.edits,
-            options: reply.type == "overflow" ? reply.options : [],
+            options: ["overflow", "proposal"].contains(reply.type) ? reply.options : [],
             confirmDelete: reply.type == "confirm_delete",
             undoHint: reply.type == "edited" && reply.edits.contains { !$0.deleted },
             suggestedCategories: reply.suggestedCategories))
@@ -819,7 +891,10 @@ struct MessageActions {
     let deletedAnswer: (String, [DeletedTask]) -> Void
     let backlogAnswer: (String, [BacklogItem]) -> Void
     let staleAnswer: (String, [BacklogItem]) -> Void
+    let gapAnswer: (String, GapOffer) -> Void
     let deadlineAnswer: (String, DeadlineAlert) -> Void
+    let noteSave: (String, String, UIImage?) -> Void
+    let noteSkip: () -> Void
     let retry: () -> Void
     let discard: () -> Void
 }
@@ -835,9 +910,11 @@ private struct MessageView: View {
                 Text(msg.text)
                     .font(DS.inter(14)).foregroundStyle(DS.bone)
                     .padding(.horizontal, 14).padding(.vertical, 11)
-                    .background(copied ? Color(hex: 0x27A644).opacity(0.35) : DS.obsidian)
+                    .background {
+                        if copied { Color(hex: 0x27A644).opacity(0.35) } else { DS.bubbleGradient }
+                    }
                     .clipShape(bubbleShape)
-                    .overlay(bubbleShape.stroke(copied ? Color(hex: 0x27A644).opacity(0.6) : DS.graphite,
+                    .overlay(bubbleShape.stroke(copied ? Color(hex: 0x27A644).opacity(0.6) : DS.bubbleStroke,
                                                 lineWidth: 0.5))
                     .opacity(msg.pending ? 0.7 : 1)
                     .onLongPressGesture {
@@ -918,6 +995,14 @@ private struct MessageView: View {
                 if !msg.staleItems.isEmpty {
                     StaleCard(items: msg.staleItems, answer: actions.staleAnswer)
                 }
+                if let gap = msg.gapOffer {
+                    GapCard(gap: gap, answer: actions.gapAnswer)
+                }
+                if msg.notePrompt {
+                    NotePromptCard(onSave: { mood, text, photo in
+                        actions.noteSave(mood, text, photo)
+                    }, onSkip: { actions.noteSkip() })
+                }
                 if let alert = msg.deadlineAlert {
                     DeadlineCard(alert: alert, answer: actions.deadlineAnswer)
                 }
@@ -927,6 +1012,15 @@ private struct MessageView: View {
                         HStack(spacing: 8) {
                             pillButton("Retry now", highlighted: true) { actions.retry() }
                             pillButton("Discard", highlighted: false) { actions.discard() }
+                        }
+                    } else if msg.approvable {
+                        // proposal-side suggestion (e.g. batch the small tasks)
+                        FlowLayout(spacing: 8) {
+                            ForEach(msg.options, id: \.self) { opt in
+                                pillButton(opt.title, highlighted: false) {
+                                    actions.sendText(opt.title)
+                                }
+                            }
                         }
                     } else {
                         OverflowCard(options: msg.options, replan: actions.replan,
@@ -942,7 +1036,7 @@ private struct MessageView: View {
                                 .font(DS.inter(14, .medium))
                                 .foregroundStyle(Color(hex: 0x08090A))
                                 .frame(maxWidth: .infinity).frame(height: 44)
-                                .background(DS.acidLime)
+                                .background(DS.limeGradient)
                                 .clipShape(RoundedRectangle(cornerRadius: 6))
                         }
                         .buttonStyle(.plain)
@@ -961,8 +1055,8 @@ private struct MessageView: View {
     }
 
     private var bubbleShape: UnevenRoundedRectangle {
-        UnevenRoundedRectangle(topLeadingRadius: 14, bottomLeadingRadius: 14,
-                               bottomTrailingRadius: 4, topTrailingRadius: 14)
+        UnevenRoundedRectangle(topLeadingRadius: 18, bottomLeadingRadius: 18,
+                               bottomTrailingRadius: 5, topTrailingRadius: 18)
     }
 }
 
@@ -972,9 +1066,11 @@ func pillButton(_ title: String, highlighted: Bool, action: @escaping () -> Void
             .font(DS.inter(12.5, highlighted ? .medium : .regular))
             .foregroundStyle(highlighted ? DS.paper : DS.fog)
             .padding(.horizontal, 14).padding(.vertical, 9)
-            .background(highlighted ? Color.white.opacity(0.06) : .clear)
-            .overlay(Capsule().stroke(highlighted ? DS.smoke : DS.graphite, lineWidth: 0.5))
+            .background(highlighted ? Color.white.opacity(0.09) : .clear)
+            .overlay(Capsule().stroke(highlighted ? Color(hex: 0x43464C) : DS.graphite,
+                                      lineWidth: 0.5))
             .clipShape(Capsule())
+            .shadow(color: .black.opacity(highlighted ? 0.35 : 0), radius: 6, y: 3)
     }
     .buttonStyle(.plain)
 }
@@ -1033,7 +1129,7 @@ private struct QuestionsBlock: View {
                     Text("Send answers")
                         .font(DS.inter(14, .medium)).foregroundStyle(Color(hex: 0x08090A))
                         .frame(maxWidth: .infinity).frame(height: 44)
-                        .background(DS.acidLime)
+                        .background(DS.limeGradient)
                         .clipShape(RoundedRectangle(cornerRadius: 6))
                 }
                 .buttonStyle(.plain)
@@ -1079,7 +1175,7 @@ private struct TimePickerSheet: View {
                 Text("Use this time")
                     .font(DS.inter(15, .medium)).foregroundStyle(Color(hex: 0x08090A))
                     .frame(maxWidth: .infinity).frame(height: 48)
-                    .background(DS.acidLime)
+                    .background(DS.limeGradient)
                     .clipShape(RoundedRectangle(cornerRadius: 6))
             }
             .buttonStyle(.plain)
@@ -1143,9 +1239,9 @@ private struct EditCard: View {
             .padding(.top, 2)
         }
         .padding(14)
-        .background(DS.carbon)
-        .cornerRadius(12)
-        .overlay(RoundedRectangle(cornerRadius: 12).stroke(DS.graphite, lineWidth: 1))
+        .background(DS.cardGradient)
+        .cornerRadius(14)
+        .overlay(RoundedRectangle(cornerRadius: 14).stroke(DS.cardStroke, lineWidth: 1))
     }
 
     private var durationCaption: String {
@@ -1169,9 +1265,9 @@ private struct DeleteConfirmCard: View {
                     .font(DS.mono(8)).kerning(0.7).foregroundStyle(DS.ash)
             }
             .padding(14)
-            .background(DS.carbon)
-            .cornerRadius(12)
-            .overlay(RoundedRectangle(cornerRadius: 12).stroke(DS.graphite, lineWidth: 1))
+            .background(DS.cardGradient)
+            .cornerRadius(14)
+            .overlay(RoundedRectangle(cornerRadius: 14).stroke(DS.cardStroke, lineWidth: 1))
             HStack(spacing: 8) {
                 Button {
                     decide("confirm")
@@ -1242,9 +1338,9 @@ private struct OverflowCard: View {
                 }
             }
             .padding(.horizontal, 14)
-            .background(DS.carbon)
-            .cornerRadius(12)
-            .overlay(RoundedRectangle(cornerRadius: 12).stroke(DS.graphite, lineWidth: 1))
+            .background(DS.cardGradient)
+            .cornerRadius(14)
+            .overlay(RoundedRectangle(cornerRadius: 14).stroke(DS.cardStroke, lineWidth: 1))
 
             HStack(spacing: 8) {
                 Button {
@@ -1253,7 +1349,7 @@ private struct OverflowCard: View {
                     Text("Re-plan")
                         .font(DS.inter(14, .medium)).foregroundStyle(Color(hex: 0x08090A))
                         .frame(maxWidth: .infinity).frame(height: 44)
-                        .background(DS.acidLime)
+                        .background(DS.limeGradient)
                         .clipShape(RoundedRectangle(cornerRadius: 6))
                 }
                 .buttonStyle(.plain)
@@ -1307,9 +1403,9 @@ private struct NudgeCard: View {
                 }
             }
             .padding(14)
-            .background(DS.carbon)
-            .cornerRadius(12)
-            .overlay(RoundedRectangle(cornerRadius: 12).stroke(DS.graphite, lineWidth: 1))
+            .background(DS.cardGradient)
+            .cornerRadius(14)
+            .overlay(RoundedRectangle(cornerRadius: 14).stroke(DS.cardStroke, lineWidth: 1))
 
             Text(nudge.question).font(DS.inter(14)).foregroundStyle(DS.mist)
             FlowLayout(spacing: 8) {
@@ -1353,9 +1449,9 @@ private struct RecapCard: View {
                 }
             }
             .padding(.horizontal, 14)
-            .background(DS.carbon)
-            .cornerRadius(12)
-            .overlay(RoundedRectangle(cornerRadius: 12).stroke(DS.graphite, lineWidth: 1))
+            .background(DS.cardGradient)
+            .cornerRadius(14)
+            .overlay(RoundedRectangle(cornerRadius: 14).stroke(DS.cardStroke, lineWidth: 1))
 
             FlowLayout(spacing: 8) {
                 ForEach(Array(options.enumerated()), id: \.offset) { i, opt in
@@ -1387,9 +1483,9 @@ private struct PrepCard: View {
                 }
             }
             .padding(14)
-            .background(DS.carbon)
-            .cornerRadius(12)
-            .overlay(RoundedRectangle(cornerRadius: 12).stroke(DS.graphite, lineWidth: 1))
+            .background(DS.cardGradient)
+            .cornerRadius(14)
+            .overlay(RoundedRectangle(cornerRadius: 14).stroke(DS.cardStroke, lineWidth: 1))
 
             HStack(spacing: 8) {
                 pillButton("Add prep", highlighted: true) { answer("Add prep", prep) }
@@ -1442,9 +1538,9 @@ private struct DisruptionCard: View {
                 }
             }
             .padding(14)
-            .background(DS.carbon)
-            .cornerRadius(12)
-            .overlay(RoundedRectangle(cornerRadius: 12).stroke(DS.graphite, lineWidth: 1))
+            .background(DS.cardGradient)
+            .cornerRadius(14)
+            .overlay(RoundedRectangle(cornerRadius: 14).stroke(DS.cardStroke, lineWidth: 1))
 
             HStack(spacing: 8) {
                 pillButton("Reflow", highlighted: true) { answer("Reflow", disruption) }
@@ -1495,9 +1591,9 @@ private struct DeadlineCard: View {
                 }
             }
             .padding(14)
-            .background(DS.carbon)
-            .cornerRadius(12)
-            .overlay(RoundedRectangle(cornerRadius: 12).stroke(DS.graphite, lineWidth: 1))
+            .background(DS.cardGradient)
+            .cornerRadius(14)
+            .overlay(RoundedRectangle(cornerRadius: 14).stroke(DS.cardStroke, lineWidth: 1))
 
             HStack(spacing: 8) {
                 pillButton("Re-spread", highlighted: true) { answer("Re-spread", alert) }
@@ -1534,9 +1630,9 @@ private struct BacklogCard: View {
                 }
             }
             .padding(.horizontal, 14)
-            .background(DS.carbon)
-            .cornerRadius(12)
-            .overlay(RoundedRectangle(cornerRadius: 12).stroke(DS.graphite, lineWidth: 1))
+            .background(DS.cardGradient)
+            .cornerRadius(14)
+            .overlay(RoundedRectangle(cornerRadius: 14).stroke(DS.cardStroke, lineWidth: 1))
 
             HStack(spacing: 8) {
                 pillButton(offers.count == 1 ? "Schedule it" : "Schedule them",
@@ -1545,6 +1641,33 @@ private struct BacklogCard: View {
             }
             Text("Parked things only surface when a day has room.")
                 .font(DS.inter(12)).foregroundStyle(DS.ash)
+        }
+    }
+}
+
+// ── micro-gap filler ────────────────────────────────────────────────
+
+private struct GapCard: View {
+    let gap: GapOffer
+    let answer: (String, GapOffer) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 10) {
+                Text("\(gap.minutes) MIN FREE · UNTIL \(gap.untilTitle.uppercased()) \(gap.untilTime)")
+                    .font(DS.mono(8)).kerning(0.7).foregroundStyle(DS.ash)
+                eventRow(title: gap.item.title, category: gap.item.category,
+                         start: gap.start, caption: "\(gap.item.durationMinutes)M")
+            }
+            .padding(14)
+            .background(DS.cardGradient)
+            .cornerRadius(14)
+            .overlay(RoundedRectangle(cornerRadius: 14).stroke(DS.cardStroke, lineWidth: 1))
+
+            HStack(spacing: 8) {
+                pillButton("Do it now", highlighted: true) { answer("Do it now", gap) }
+                pillButton("Keep parked", highlighted: false) { answer("Keep parked", gap) }
+            }
         }
     }
 }
@@ -1576,9 +1699,9 @@ private struct StaleCard: View {
                 }
             }
             .padding(.horizontal, 14)
-            .background(DS.carbon)
-            .cornerRadius(12)
-            .overlay(RoundedRectangle(cornerRadius: 12).stroke(DS.graphite, lineWidth: 1))
+            .background(DS.cardGradient)
+            .cornerRadius(14)
+            .overlay(RoundedRectangle(cornerRadius: 14).stroke(DS.cardStroke, lineWidth: 1))
 
             HStack(spacing: 8) {
                 pillButton("Schedule now", highlighted: true) { answer("Schedule now", items) }
@@ -1607,9 +1730,9 @@ private struct DeletedCard: View {
                     .font(DS.mono(8)).kerning(0.7).foregroundStyle(DS.ash)
             }
             .padding(14)
-            .background(DS.carbon)
-            .cornerRadius(12)
-            .overlay(RoundedRectangle(cornerRadius: 12).stroke(DS.graphite, lineWidth: 1))
+            .background(DS.cardGradient)
+            .cornerRadius(14)
+            .overlay(RoundedRectangle(cornerRadius: 14).stroke(DS.cardStroke, lineWidth: 1))
 
             HStack(spacing: 8) {
                 pillButton(tasks.count == 1 ? "Drop it" : "Drop them", highlighted: true) {
@@ -1663,9 +1786,9 @@ private struct RolloverCard: View {
                 }
             }
             .padding(.horizontal, 14)
-            .background(DS.carbon)
-            .cornerRadius(12)
-            .overlay(RoundedRectangle(cornerRadius: 12).stroke(DS.graphite, lineWidth: 1))
+            .background(DS.cardGradient)
+            .cornerRadius(14)
+            .overlay(RoundedRectangle(cornerRadius: 14).stroke(DS.cardStroke, lineWidth: 1))
 
             FlowLayout(spacing: 8) {
                 ForEach(Array(options.enumerated()), id: \.offset) { i, opt in
@@ -1727,9 +1850,9 @@ private struct WeekReviewCard: View {
                 }
             }
             .padding(14)
-            .background(DS.carbon)
-            .cornerRadius(12)
-            .overlay(RoundedRectangle(cornerRadius: 12).stroke(DS.graphite, lineWidth: 1))
+            .background(DS.cardGradient)
+            .cornerRadius(14)
+            .overlay(RoundedRectangle(cornerRadius: 14).stroke(DS.cardStroke, lineWidth: 1))
 
             if let insight = review.insight {
                 Text(insight.text).font(DS.inter(13.5)).foregroundStyle(DS.bone)
@@ -1808,9 +1931,9 @@ private struct ProposalCard: View {
             }
         }
         .padding(14)
-        .background(DS.carbon)
-        .cornerRadius(12)
-        .overlay(RoundedRectangle(cornerRadius: 12).stroke(DS.graphite, lineWidth: 1))
+        .background(DS.cardGradient)
+        .cornerRadius(14)
+        .overlay(RoundedRectangle(cornerRadius: 14).stroke(DS.cardStroke, lineWidth: 1))
     }
 
     private var weekHeader: some View {

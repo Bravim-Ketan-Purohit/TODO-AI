@@ -119,9 +119,9 @@ struct OnboardingView: View {
             }
             .padding(16)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(DS.carbon)
-            .cornerRadius(12)
-            .overlay(RoundedRectangle(cornerRadius: 12).stroke(DS.graphite, lineWidth: 1))
+            .background(DS.cardGradient)
+            .cornerRadius(14)
+            .overlay(RoundedRectangle(cornerRadius: 14).stroke(DS.cardStroke, lineWidth: 1))
 
             VStack(alignment: .leading, spacing: 10) {
                 bullet("Existing events are read, never overwritten")
@@ -137,7 +137,7 @@ struct OnboardingView: View {
             Image(systemName: "calendar.badge.exclamationmark")
                 .font(.system(size: 24, weight: .light)).foregroundStyle(DS.ash)
                 .frame(width: 52, height: 52)
-                .overlay(RoundedRectangle(cornerRadius: 12).stroke(DS.graphite, lineWidth: 1))
+                .overlay(RoundedRectangle(cornerRadius: 14).stroke(DS.cardStroke, lineWidth: 1))
                 .padding(.bottom, 4)
             Text("ERR · ACCESS_DENIED")
                 .font(DS.mono(9)).kerning(0.9).foregroundStyle(DS.coral)
@@ -270,9 +270,9 @@ struct OnboardingView: View {
             }
             .padding(14)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(DS.carbon)
-            .cornerRadius(12)
-            .overlay(RoundedRectangle(cornerRadius: 12).stroke(DS.graphite, lineWidth: 1))
+            .background(DS.cardGradient)
+            .cornerRadius(14)
+            .overlay(RoundedRectangle(cornerRadius: 14).stroke(DS.cardStroke, lineWidth: 1))
         }
     }
 
@@ -300,9 +300,9 @@ struct OnboardingView: View {
         }
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(DS.carbon)
-        .cornerRadius(12)
-        .overlay(RoundedRectangle(cornerRadius: 12).stroke(DS.graphite, lineWidth: 1))
+        .background(DS.cardGradient)
+        .cornerRadius(14)
+        .overlay(RoundedRectangle(cornerRadius: 14).stroke(DS.cardStroke, lineWidth: 1))
     }
 
     private func stepLabel(_ text: String) -> some View {
@@ -339,7 +339,7 @@ struct OnboardingView: View {
                 Text(primaryTitle)
                     .font(DS.inter(15, .medium)).foregroundStyle(Color(hex: 0x08090A))
                     .frame(maxWidth: .infinity).frame(height: 48)
-                    .background(DS.acidLime)
+                    .background(DS.limeGradient)
                     .clipShape(RoundedRectangle(cornerRadius: 6))
             }
             .buttonStyle(.plain)

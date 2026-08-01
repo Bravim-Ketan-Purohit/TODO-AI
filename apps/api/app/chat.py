@@ -6,8 +6,8 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from . import db, gcal, llm, scheduler
 from .auth import current_user
-from .models import (DEFAULT_CATEGORIES, ChatIn, ChatReply, EditInfo, PlanItem,
-                     Profile, Question, Recurrence)
+from .models import (DEFAULT_CATEGORIES, ChatIn, ChatReply, EditInfo, FixOption,
+                     PlanItem, Profile, Question, Recurrence)
 
 router = APIRouter(tags=["chat"])
 
@@ -274,8 +274,19 @@ def chat(body: ChatIn, user=Depends(current_user)) -> ChatReply:
                                  "proposal": [p.model_dump() for p in placed],
                                  "recurring": [t.model_dump() for t in recurring],
                                  "deadlines": [d.model_dump() for d in result.deadlines]})
+        # fragmentation check: 3+ short scattered tasks → offer to batch them
+        def _mins(p):
+            return int((datetime.fromisoformat(p.end)
+                        - datetime.fromisoformat(p.start)).total_seconds() // 60)
+        smalls = [p for p in placed if _mins(p) <= 30]
+        options = []
+        if len(smalls) >= 3:
+            options = [FixOption(
+                title=f"Batch the {len(smalls)} small tasks into one block",
+                subtitle="Fewer context switches")]
+
         n = len(placed) + len(recurring)
-        return ChatReply(type="proposal", plan=plan,
+        return ChatReply(type="proposal", plan=plan, options=options,
                          suggested_categories=_unknown_categories(result.tasks, profile),
                          text=result.reply
                          or f"Placed {n} task(s) around {len(fixed)} fixed event(s) — no overlaps. "
