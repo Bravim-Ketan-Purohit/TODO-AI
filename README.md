@@ -38,6 +38,9 @@ on your Google Calendar.
 
 <br />
 
+<!-- SCREENSHOTS — drop the six PNGs into docs/screenshots/ (see the README there
+     for names), then delete this comment and the two fences below to reveal the grid.
+
 ## Screenshots
 
 <div align="center">
@@ -52,7 +55,7 @@ on your Google Calendar.
 
 </div>
 
-<br />
+-->
 
 ---
 
